@@ -37,14 +37,11 @@ def detect_latest_slate():
         if not match:
             continue
 
-        slate_date = match.group(1)
-        slate_name = match.group(2)
-
         parsed.append(
             {
                 "path": path,
-                "slate_date": slate_date,
-                "slate_name": slate_name,
+                "slate_date": match.group(1),
+                "slate_name": match.group(2),
                 "modified": path.stat().st_mtime,
             }
         )
@@ -53,12 +50,10 @@ def detect_latest_slate():
         raise FileNotFoundError(f"No valid dk_lol_YYYY-MM-DD_slate.csv files found in {SLATE_DATA_DIR}")
 
     latest = max(parsed, key=lambda x: (x["slate_date"], x["modified"]))
-
     return latest["slate_date"], latest["slate_name"], latest["path"]
 
 
 SLATE_DATE, SLATE_NAME, SLATE_FILE = detect_latest_slate()
-
 OUTPUT_FILE = REPORT_DIR / f"lol_playbook_{SLATE_DATE}_{SLATE_NAME}.html"
 
 POSITION_ORDER = {
@@ -132,6 +127,19 @@ def rating_badge(score):
         return "good"
     if score <= -0.75:
         return "bad"
+    return "neutral"
+
+
+def edge_class(v):
+    try:
+        v = float(v)
+    except Exception:
+        return "neutral"
+
+    if v > 0:
+        return "edge-pos"
+    if v < 0:
+        return "edge-neg"
     return "neutral"
 
 
@@ -329,9 +337,14 @@ def team_summary(team_df):
             "avg_dk": None,
             "avg_dk_edge": None,
             "avg_kill_edge": None,
+            "avg_death_edge": None,
+            "avg_assist_edge": None,
             "avg_gold10_edge": None,
+            "avg_xp10_edge": None,
+            "avg_cs10_edge": None,
+            "avg_dpm_edge": None,
             "avg_value": None,
-            "games": 0,
+            "starter_games": 0,
         }
 
     return {
@@ -339,10 +352,111 @@ def team_summary(team_df):
         "avg_dk": player_df["avg_dk"].mean(),
         "avg_dk_edge": player_df["avg_dk_edge"].mean(),
         "avg_kill_edge": player_df["avg_kill_edge"].mean(),
+        "avg_death_edge": player_df["avg_death_edge"].mean(),
+        "avg_assist_edge": player_df["avg_assist_edge"].mean(),
         "avg_gold10_edge": player_df["avg_gold_diff_10_edge"].mean(),
+        "avg_xp10_edge": player_df["avg_xp_diff_10_edge"].mean(),
+        "avg_cs10_edge": player_df["avg_cs_diff_10_edge"].mean(),
+        "avg_dpm_edge": player_df["avg_dpm_edge"].mean(),
         "avg_value": player_df["dk_value"].mean(),
-        "games": player_df["games"].sum(),
+        "starter_games": player_df["games"].sum(),
     }
+
+
+def matchup_edge_rows(away, home, away_summary, home_summary):
+    metrics = [
+        ("Team Rating", "avg_rating", 2, "higher", "overall player/team strength rating"),
+        ("Avg DK", "avg_dk", 1, "higher", "average DraftKings fantasy production"),
+        ("DK Edge", "avg_dk_edge", 1, "higher", "fantasy production above/below lane average"),
+        ("Kill Edge", "avg_kill_edge", 2, "higher", "kill production above/below lane average"),
+        ("Death Edge", "avg_death_edge", 2, "lower", "death rate relative to lane average"),
+        ("Assist Edge", "avg_assist_edge", 2, "higher", "assist production above/below lane average"),
+        ("DPM Edge", "avg_dpm_edge", 1, "higher", "damage per minute advantage"),
+        ("DK Value", "avg_value", 2, "higher", "DraftKings points per $1K salary"),
+    ]
+
+    rows = ""
+    away_wins = 0
+    home_wins = 0
+
+    for label, key, decimals, direction, explanation in metrics:
+        av = away_summary.get(key)
+        hv = home_summary.get(key)
+
+        if pd.isna(av) or pd.isna(hv):
+            summary = "Not enough data available."
+            summary_class = "neutral"
+        else:
+            if direction == "lower":
+                if av <= hv:
+                    winner = away
+                    margin = hv - av
+                    away_wins += 1
+                else:
+                    winner = home
+                    margin = av - hv
+                    home_wins += 1
+
+                summary = f"{winner} is better by {fmt_num(margin, decimals)}. Lower is better for {label.lower()} because it means fewer deaths/negative events."
+            else:
+                if av >= hv:
+                    winner = away
+                    margin = av - hv
+                    away_wins += 1
+                else:
+                    winner = home
+                    margin = hv - av
+                    home_wins += 1
+
+                summary = f"{winner} is better by {fmt_num(margin, decimals)}. Higher is better for {label.lower()} because it reflects stronger {explanation}."
+
+            summary_class = "edge-pos" if winner == home else "edge-neg"
+
+        rows += f"""
+        <tr>
+            <td>{label}</td>
+            <td>{fmt_num(av, decimals)}</td>
+            <td>{fmt_num(hv, decimals)}</td>
+            <td class="{summary_class}"><b>{summary}</b></td>
+        </tr>
+        """
+
+    if away_wins > home_wins:
+        lean = away
+        lean_class = "win"
+    elif home_wins > away_wins:
+        lean = home
+        lean_class = "loss"
+    else:
+        lean = "EVEN"
+        lean_class = "neutral"
+
+    return rows, lean, lean_class, away_wins, home_wins
+
+
+def build_matchup_edge_block(away, home, away_summary, home_summary):
+    rows, lean, lean_class, away_wins, home_wins = matchup_edge_rows(
+        away,
+        home,
+        away_summary,
+        home_summary,
+    )
+
+    return f"""
+<table class="edge-table">
+    <thead>
+        <tr>
+            <th>Metric</th>
+            <th>{away}</th>
+            <th>{home}</th>
+            <th>Summary</th>
+        </tr>
+    </thead>
+    <tbody>
+        {rows}
+    </tbody>
+</table>
+    """
 
 
 def build_player_rows(team_df):
@@ -374,7 +488,8 @@ def build_player_rows(team_df):
             <td>{fmt_num(r['avg_dk'], 1)}</td>
             <td>{fmt_num(r['avg_dk_edge'], 1)}</td>
             <td>{fmt_num(r['avg_kill_edge'], 2)}</td>
-            <td>{fmt_num(r['avg_gold_diff_10_edge'], 1)}</td>
+            <td>{fmt_num(r['avg_death_edge'], 2)}</td>
+            <td>{fmt_num(r['avg_dpm_edge'], 1)}</td>
             <td><span class="badge {badge}">{fmt_num(r['rating_score'], 2)}</span></td>
             <td>{fmt_num(r['dk_value'], 2)}</td>
         </tr>
@@ -400,8 +515,8 @@ def build_team_block(team_name, team_df, summary, prediction):
             <div><span>Avg DK</span><b>{fmt_num(summary['avg_dk'], 1)}</b></div>
             <div><span>DK Edge</span><b>{fmt_num(summary['avg_dk_edge'], 1)}</b></div>
             <div><span>Kill Edge</span><b>{fmt_num(summary['avg_kill_edge'], 2)}</b></div>
-            <div><span>Gold10 Edge</span><b>{fmt_num(summary['avg_gold10_edge'], 1)}</b></div>
-            <div><span>DK Value</span><b>{fmt_num(summary['avg_value'], 2)}</b></div>
+            <div><span>Death Edge</span><b>{fmt_num(summary['avg_death_edge'], 2)}</b></div>
+            <div><span>DPM Edge</span><b>{fmt_num(summary['avg_dpm_edge'], 1)}</b></div>
         </div>
 
         <table>
@@ -414,7 +529,8 @@ def build_team_block(team_name, team_df, summary, prediction):
                     <th>Avg DK</th>
                     <th>DK Edge</th>
                     <th>Kill Edge</th>
-                    <th>Gold10</th>
+                    <th>Death Edge</th>
+                    <th>DPM</th>
                     <th>Rating</th>
                     <th>Value</th>
                 </tr>
@@ -454,12 +570,21 @@ def build_html(df):
             away_summary["avg_rating"],
         )
 
+        matchup_edge_block = build_matchup_edge_block(
+            away,
+            home,
+            away_summary,
+            home_summary,
+        )
+
         game_sections += f"""
         <section class="matchup">
             <div class="matchup-title">
                 <h1>{away} vs {home}</h1>
                 <span>{game_time}</span>
             </div>
+
+            {matchup_edge_block}
 
             <div class="teams">
                 {build_team_block(away, away_df, away_summary, away_prediction)}
@@ -526,6 +651,65 @@ def build_html(df):
             .matchup-title span {{
                 font-size: 14px;
                 color: #ddd;
+            }}
+
+            .matchup-edge-card {{
+                border: 1px solid #bbb;
+                background: #fff;
+                margin-bottom: 16px;
+            }}
+
+            .edge-header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 12px 14px;
+                background: #f0f0f0;
+                border-bottom: 1px solid #ccc;
+            }}
+
+            .edge-header h2 {{
+                margin: 0;
+                font-size: 18px;
+            }}
+
+            .edge-header p {{
+                margin: 4px 0 0;
+                font-size: 12px;
+                color: #555;
+            }}
+
+            .edge-lean {{
+                padding: 8px 14px;
+                font-weight: bold;
+                color: white;
+                border-radius: 4px;
+            }}
+
+            .edge-lean.win {{
+                background: #23c552;
+            }}
+
+            .edge-lean.loss {{
+                background: #f84f31;
+            }}
+
+            .edge-lean.neutral {{
+                background: #999;
+            }}
+
+            .edge-table th {{
+                background: #444;
+            }}
+
+            .edge-pos {{
+                color: #0b7a28;
+                font-weight: bold;
+            }}
+
+            .edge-neg {{
+                color: #b00020;
+                font-weight: bold;
             }}
 
             .teams {{
@@ -669,7 +853,7 @@ def build_html(df):
         {game_sections}
 
         <div class="footer">
-            Built from non-captain DK salary data + manual starters + internal lane ratings.
+            Built from non-captain DK salary data + manual starters + internal lane ratings + team matchup metrics.
         </div>
     </body>
     </html>
@@ -690,6 +874,7 @@ def main():
 
     df = load_data(conn)
     conn.close()
+
     print(f"Detected slate date: {SLATE_DATE}")
     print(f"Detected slate name: {SLATE_NAME}")
     print(f"Detected slate file: {SLATE_FILE}")
