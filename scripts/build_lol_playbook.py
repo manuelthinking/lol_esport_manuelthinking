@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -18,8 +19,45 @@ DB_SERVER = os.getenv("DB_SERVER")
 DB_DATABASE = os.getenv("DB_DATABASE")
 DB_DRIVER = os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server")
 
-SLATE_DATE = "2026-05-12"
-SLATE_NAME = "lpl_main"
+SLATE_DATA_DIR = BASE_DIR / "data" / "slate_data"
+
+
+def detect_latest_slate():
+    pattern = re.compile(r"dk_lol_(\d{4}-\d{2}-\d{2})_(.+)\.csv$", re.IGNORECASE)
+
+    files = list(SLATE_DATA_DIR.glob("dk_lol_*.csv"))
+
+    if not files:
+        raise FileNotFoundError(f"No dk_lol_*.csv files found in {SLATE_DATA_DIR}")
+
+    parsed = []
+
+    for path in files:
+        match = pattern.match(path.name)
+        if not match:
+            continue
+
+        slate_date = match.group(1)
+        slate_name = match.group(2)
+
+        parsed.append(
+            {
+                "path": path,
+                "slate_date": slate_date,
+                "slate_name": slate_name,
+                "modified": path.stat().st_mtime,
+            }
+        )
+
+    if not parsed:
+        raise FileNotFoundError(f"No valid dk_lol_YYYY-MM-DD_slate.csv files found in {SLATE_DATA_DIR}")
+
+    latest = max(parsed, key=lambda x: (x["slate_date"], x["modified"]))
+
+    return latest["slate_date"], latest["slate_name"], latest["path"]
+
+
+SLATE_DATE, SLATE_NAME, SLATE_FILE = detect_latest_slate()
 
 OUTPUT_FILE = REPORT_DIR / f"lol_playbook_{SLATE_DATE}_{SLATE_NAME}.html"
 
@@ -652,7 +690,9 @@ def main():
 
     df = load_data(conn)
     conn.close()
-
+    print(f"Detected slate date: {SLATE_DATE}")
+    print(f"Detected slate name: {SLATE_NAME}")
+    print(f"Detected slate file: {SLATE_FILE}")
     print(f"Slate rows loaded before starter filter: {len(df):,}")
 
     if df.empty:
