@@ -1,5 +1,7 @@
 import os
+import re
 from pathlib import Path
+
 import pandas as pd
 import pyodbc
 from dotenv import load_dotenv
@@ -13,9 +15,40 @@ DB_SERVER = os.getenv("DB_SERVER")
 DB_DATABASE = os.getenv("DB_DATABASE")
 DB_DRIVER = os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server")
 
-SLATE_DATE = "2026-05-12"
-SLATE_NAME = "lpl_main"
-SOURCE_FILE = "dk_lol_2026-05-12_lpl_main.csv"
+
+def detect_latest_slate_file():
+    pattern = re.compile(r"dk_lol_(\d{4}-\d{2}-\d{2})_(.+)\.csv$", re.IGNORECASE)
+
+    files = list(SLATE_DIR.glob("dk_lol_*.csv"))
+
+    if not files:
+        raise FileNotFoundError(f"No dk_lol_*.csv files found in {SLATE_DIR}")
+
+    parsed = []
+
+    for path in files:
+        match = pattern.match(path.name)
+        if not match:
+            continue
+
+        parsed.append(
+            {
+                "path": path,
+                "slate_date": match.group(1),
+                "slate_name": match.group(2),
+                "source_file": path.name,
+                "modified": path.stat().st_mtime,
+            }
+        )
+
+    if not parsed:
+        raise FileNotFoundError(
+            f"No valid dk_lol_YYYY-MM-DD_slate.csv files found in {SLATE_DIR}"
+        )
+
+    latest = max(parsed, key=lambda x: (x["slate_date"], x["modified"]))
+
+    return latest
 
 
 def connect():
@@ -48,10 +81,16 @@ def safe_float(v):
 
 
 def main():
-    path = SLATE_DIR / SOURCE_FILE
+    slate = detect_latest_slate_file()
 
-    if not path.exists():
-        raise FileNotFoundError(f"Could not find file: {path}")
+    path = slate["path"]
+    slate_date = slate["slate_date"]
+    slate_name = slate["slate_name"]
+    source_file = slate["source_file"]
+
+    print(f"Detected slate date: {slate_date}")
+    print(f"Detected slate name: {slate_name}")
+    print(f"Detected source file: {path}")
 
     conn = connect()
     cursor = conn.cursor()
@@ -69,9 +108,9 @@ def main():
     for _, row in df.iterrows():
         rows.append(
             (
-                SLATE_DATE,
-                SLATE_NAME,
-                SOURCE_FILE,
+                slate_date,
+                slate_name,
+                source_file,
                 row.get("Position"),
                 row.get("Name + ID"),
                 row.get("Name"),
@@ -90,8 +129,8 @@ def main():
         WHERE slate_date = ?
           AND slate_name = ?
         """,
-        SLATE_DATE,
-        SLATE_NAME,
+        slate_date,
+        slate_name,
     )
     conn.commit()
 
@@ -124,8 +163,8 @@ def main():
         WHERE slate_date = ?
           AND slate_name = ?
         """,
-        SLATE_DATE,
-        SLATE_NAME,
+        slate_date,
+        slate_name,
     )
 
     print("Rows inserted:", cursor.fetchone()[0])

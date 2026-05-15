@@ -1,0 +1,65 @@
+/* ============================================================
+   App-facing Bayesian Training View
+   ============================================================ */
+
+IF OBJECT_ID('dbo.vw_lol_bayes_matchup_training', 'V') IS NOT NULL
+BEGIN
+    DROP VIEW dbo.vw_lol_bayes_matchup_training;
+END;
+GO
+
+CREATE VIEW dbo.vw_lol_bayes_matchup_training AS
+SELECT
+    bayes_matchup_id,
+    series_id,
+    series_date,
+    season,
+    league,
+    teamname,
+    opponent_teamname,
+    series_result,
+    won_series,
+    games_played,
+
+    top_kill_edge,
+    jng_kill_edge,
+    mid_kill_edge,
+    bot_kill_edge,
+    sup_kill_edge,
+
+    top_assist_edge,
+    jng_assist_edge,
+    mid_assist_edge,
+    bot_assist_edge,
+    sup_assist_edge,
+
+    top_death_edge,
+    jng_death_edge,
+    mid_death_edge,
+    bot_death_edge,
+    sup_death_edge,
+
+    top_dk_edge,
+    jng_dk_edge,
+    mid_dk_edge,
+    bot_dk_edge,
+    sup_dk_edge,
+
+    team_kill_edge,
+    team_assist_edge,
+    team_death_edge,
+    team_dk_edge,
+
+    team_rating_score,
+    opp_rating_score,
+    team_rating_edge,
+
+    top_kill_bucket,
+    jng_kill_bucket,
+    mid_kill_bucket,
+    bot_kill_bucket,
+    sup_assist_bucket,
+    bot_dk_bucket,
+    team_rating_bucket
+FROM dbo.lol_bayes_matchup_training;
+GO

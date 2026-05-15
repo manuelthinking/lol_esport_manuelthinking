@@ -1,0 +1,140 @@
+/* ============================================================
+   Create dbo.vw_lol_series_player_stats
+
+   Uses:
+     dbo.lol_team_series_results
+     dbo.fact_lol_player_game
+
+   Purpose:
+     One row per player per series, using the real series table.
+   ============================================================ */
+
+IF OBJECT_ID('dbo.vw_lol_series_player_stats', 'V') IS NOT NULL
+BEGIN
+    DROP VIEW dbo.vw_lol_series_player_stats;
+END;
+GO
+
+CREATE VIEW dbo.vw_lol_series_player_stats AS
+
+WITH series_games AS
+(
+    SELECT
+        r.series_id,
+        r.league,
+        r.[year] AS season,
+        r.split,
+        r.series_start_date AS series_date,
+        r.teamname,
+        r.opponent AS opponent_teamname,
+        r.series_result,
+        CAST(r.is_series_win AS BIT) AS won_series,
+        r.games_played,
+        LTRIM(RTRIM(value)) AS game_id
+    FROM dbo.lol_team_series_results r
+    CROSS APPLY STRING_SPLIT(
+        REPLACE(
+            REPLACE(
+                REPLACE(ISNULL(r.gameids, ''), '|', ','),
+            ';', ','),
+        ' ', ''),
+        ','
+    )
+    WHERE r.league IN ('LPL', 'LCK')
+      AND r.series_result IN ('2-0', '2-1', '1-2', '0-2')
+      AND r.gameids IS NOT NULL
+      AND LTRIM(RTRIM(value)) <> ''
+),
+
+player_series AS
+(
+    SELECT
+        sg.series_id,
+        sg.series_date,
+        sg.season,
+        sg.league,
+        sg.split,
+        sg.teamname,
+        sg.opponent_teamname,
+        pg.player_name,
+
+        CASE
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) IN ('bot', 'adc') THEN 'BOT'
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) IN ('jungle', 'jng') THEN 'JNG'
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) = 'top' THEN 'TOP'
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) = 'mid' THEN 'MID'
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) IN ('support', 'sup') THEN 'SUP'
+            ELSE UPPER(LTRIM(RTRIM(pg.position)))
+        END AS position,
+
+        sg.series_result,
+        sg.won_series,
+        sg.games_played,
+
+        SUM(CAST(pg.kills AS FLOAT)) AS kills,
+        SUM(CAST(pg.deaths AS FLOAT)) AS deaths,
+        SUM(CAST(pg.assists AS FLOAT)) AS assists,
+        SUM(CAST(pg.dk_points AS FLOAT)) AS dk_points,
+
+        SUM(CAST(pg.cs AS FLOAT)) AS cs,
+        AVG(CAST(pg.dpm AS FLOAT)) AS avg_dpm,
+        AVG(CAST(pg.damage_share AS FLOAT)) AS avg_damage_share,
+        AVG(CAST(pg.vision_score AS FLOAT)) AS avg_vision_score,
+        AVG(CAST(pg.gold_diff_10 AS FLOAT)) AS avg_gold_diff_10,
+        AVG(CAST(pg.xp_diff_10 AS FLOAT)) AS avg_xp_diff_10,
+        AVG(CAST(pg.cs_diff_10 AS FLOAT)) AS avg_cs_diff_10
+    FROM series_games sg
+    INNER JOIN dbo.fact_lol_player_game pg
+        ON pg.game_id = sg.game_id
+        AND LOWER(LTRIM(RTRIM(pg.team_name))) = LOWER(LTRIM(RTRIM(sg.teamname)))
+    WHERE pg.league IN ('LPL', 'LCK')
+      AND LOWER(LTRIM(RTRIM(pg.position))) IN ('top', 'jng', 'jungle', 'mid', 'bot', 'adc', 'sup', 'support')
+    GROUP BY
+        sg.series_id,
+        sg.series_date,
+        sg.season,
+        sg.league,
+        sg.split,
+        sg.teamname,
+        sg.opponent_teamname,
+        pg.player_name,
+        CASE
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) IN ('bot', 'adc') THEN 'BOT'
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) IN ('jungle', 'jng') THEN 'JNG'
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) = 'top' THEN 'TOP'
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) = 'mid' THEN 'MID'
+            WHEN LOWER(LTRIM(RTRIM(pg.position))) IN ('support', 'sup') THEN 'SUP'
+            ELSE UPPER(LTRIM(RTRIM(pg.position)))
+        END,
+        sg.series_result,
+        sg.won_series,
+        sg.games_played
+)
+
+SELECT
+    series_id,
+    series_date,
+    season,
+    league,
+    split,
+    teamname,
+    opponent_teamname,
+    player_name,
+    position,
+    series_result,
+    won_series,
+    games_played,
+    kills,
+    deaths,
+    assists,
+    dk_points,
+    cs,
+    avg_dpm,
+    avg_damage_share,
+    avg_vision_score,
+    avg_gold_diff_10,
+    avg_xp_diff_10,
+    avg_cs_diff_10
+FROM player_series
+WHERE position IN ('TOP', 'JNG', 'MID', 'BOT', 'SUP');
+GO
