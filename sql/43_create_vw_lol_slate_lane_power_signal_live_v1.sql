@@ -247,6 +247,10 @@ SELECT
     opponent_neutral_or_better_lanes,
     opponent_neutral_or_better_carry_lanes,
 
+    -- Backward-compatible aliases used by the Streamlit command center.
+    opponent_neutral_or_better_lanes AS opponent_neutralized_lanes,
+    opponent_neutral_or_better_carry_lanes AS opponent_neutral_high_edges,
+
     CASE
         WHEN rated_lane_rows < 3 THEN 'Thin Live Rating'
         WHEN total_lane_edge >= 50 THEN 'Massive Overall Lane Edge'
@@ -274,6 +278,14 @@ SELECT
         WHEN carry_lane_edge <= -15 THEN -0.10
         ELSE 0.00
     END AS lane_power_win_pct_modifier,
+
+    -- Backward-compatible name used by the current Streamlit app.
+    CASE
+        WHEN rated_lane_rows < 3 THEN 0.00
+        WHEN carry_lane_edge >= 20 THEN 0.05
+        WHEN carry_lane_edge <= -15 THEN -0.10
+        ELSE 0.00
+    END AS lane_power_win_pct,
 
     CASE
         WHEN rated_lane_rows < 3 THEN 'Thin Live Data'
