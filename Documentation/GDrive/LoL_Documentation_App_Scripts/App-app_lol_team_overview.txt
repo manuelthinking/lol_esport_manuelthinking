@@ -1,0 +1,286 @@
+# App-app_lol_team_overview
+
+## Purpose
+Streamlit slate team overview and projection research app.
+
+In plain English:
+This app reviews the selected LoL slate from a team, series-profile, Bayes, lane-power, and player-projection perspective. It helps decide which teams to stack, which match scenarios to use, and which players project best before building lineups.
+
+This is one of the main pre-lock analysis apps.
+
+## Type
+Streamlit app.
+
+## Suggested Run Command
+cd C:\DailyDFS\LoL
+python -m streamlit run .\app_lol_team_overview.py
+
+## Data It Consumes
+
+### SQL Tables / Views
+- dbo.dk_lol_slate_player
+- dbo.lol_player_lane_ratings
+- dbo.lol_team_series_profiles
+- dbo.vw_lol_bayes_matchup_training
+- dbo.vw_lol_bayes_league_priors
+- dbo.vw_lol_bayes_strength_matchups
+- dbo.vw_lol_team_strength_bucket
+- dbo.vw_lol_lane_strength_bucket
+- dbo.vw_lol_slate_lane_power_signal_live_v1
+
+### Local Files
+- C:\DailyDFS\LoL\data\manual_starters.csv
+
+## Data It Creates
+This app does not create persistent files or SQL tables.
+
+It creates in-app dataframes:
+- selected slate player pool
+- manual-starter-filtered player pool
+- team overview
+- team series profiles
+- slate predictions
+- Bayesian matchup read
+- suggested scenarios
+- player projections
+- lane power signal tables
+
+## Main Tabs
+1. Team Overview
+2. Team Series Splits
+3. Slate Predictions
+4. Bayesian Matchup Read
+5. Player Projections
+6. Player Table
+7. Matchups
+8. Raw Data
+
+## Tab Details
+
+### Team Overview
+Shows team-level summaries from selected slate players:
+- team
+- full team name
+- matchup
+- players
+- rating
+- team average DK
+- DK edge
+- kill edge
+- death edge
+- value
+- top player
+- top average DK
+
+Also includes extra team details:
+- salary
+- assist edge
+- DPM edge
+- starter games
+- team value
+- top player salary/rating/value
+
+Also includes Lane Power PIT Adjustment:
+- Bayes win %
+- lane modifier
+- adjusted win %
+- carry lane edge
+- carry lane tier
+- opponent neutral+ carry lanes
+- DFS signal
+- DFS note
+- priority flags
+
+### Team Series Splits
+Uses dbo.lol_team_series_profiles.
+
+Shows historical profiles for slate teams by:
+- 2-0
+- 2-1
+- 1-2
+- 0-2
+
+Metrics include:
+- series count
+- average DK with bonus
+- team kills
+- kills per game
+- deaths
+- game length
+- series DFS score
+- bloodiness
+- sweep score
+- profile label
+
+### Slate Predictions
+Blends current slate team strength with historical team series profiles.
+
+Outputs:
+- stack score
+- DFS label
+- best path
+- 2-0 score
+- 2-1 score
+- 1-2 score
+- 0-2 score
+- bloodbath score
+- sweep score
+- best GPP angle
+
+This is used to decide which teams are best DFS stacks.
+
+### Bayesian Matchup Read
+Builds matchup-level Bayes read using:
+- team strength buckets
+- lane strength buckets
+- historical strength matchup results
+- league priors
+
+Outputs:
+- suggested scenario
+- winner Bayes win %
+- winner 2-0 %
+- winner 2-1 %
+- path edge
+- similar sample
+- sample type
+- confidence
+- model rule
+- path decision
+- scenario note
+- lineup builder note
+
+This tab is important for deciding lineup builder scenario selections.
+
+### Player Projections
+Builds first-pass player projections using:
+- player historical avg DK
+- player rating
+- team stack score
+- expected outcome path
+- position multiplier
+- risk multiplier
+- ceiling multiplier
+
+Outputs:
+- projected DK
+- floor
+- ceiling
+- value
+- CPT projection
+- CPT salary
+- CPT value
+- projection label
+
+### Player Table
+Displays the selected slate player pool and rating details.
+
+### Matchups
+Displays matchup-level slate information and supporting tables.
+
+### Raw Data
+Shows raw underlying dataframes for debugging.
+
+## Manual Starters
+The app can use manual starters only.
+
+If enabled:
+- reads manual_starters.csv
+- keeps only rows where is_starter = 1 and player/team/position match
+
+If missing or unmatched:
+- app shows all non-CPT DK rows with a warning/info message
+
+## Key Internal Logic
+
+### Team Overview
+Aggregates player rows by team and game_info.
+
+### Slate Predictions
+Uses:
+- team rating
+- total average DK
+- kill edge
+- DK edge
+- value
+- historical series DFS score
+
+### Bayes Strength Read
+Compares current team/lane strength buckets against historical matchup buckets.
+
+Uses smoothing toward league priors when samples are small.
+
+### Suggested Scenarios
+Chooses:
+- favorite team
+- underdog team
+- winner result
+- loser result
+- confidence
+- action note for lineup builder
+
+The model is designed to default toward 2-1 when sweep confidence is not strong enough.
+
+## What Uses This App
+This app feeds manual decision-making for:
+- app_lol_lineup_builder.py
+- scenario selection
+- team stack selection
+- player pool decisions
+- CPT decisions
+- TEAM slot decisions
+
+It does not directly write output, but it strongly informs lineup-building choices.
+
+## Run Frequency
+Run on slate days after:
+1. DK slate has been loaded.
+2. manual_starters.csv is prepared.
+3. historical profile and Bayes/lane views are current enough.
+
+## Suggested Workflow Placement
+DK slate ingest
+    -> build_manual_starters_from_dk
+    -> app_lol_team_overview
+    -> review Bayes / lane power / suggested scenarios
+    -> app_lol_lineup_builder
+    -> lineup CSVs
+
+## Important Risk Areas
+
+### Risk 1: Many SQL dependencies
+This app depends on many views/tables. If one breaks, a tab may be empty or show warnings.
+
+### Risk 2: Hard-coded season filters
+Some SQL queries filter season = 2026. This needs review when moving into a new season.
+
+### Risk 3: Team name matching
+Series profiles use full team names, while slates may use abbreviations. Team-name mapping issues can cause missing profiles or Bayes reads.
+
+### Risk 4: Manual starter fallback
+If starters do not match, the app may show all non-CPT rows.
+
+### Risk 5: Projection logic is first-pass
+The projections are helpful for decision-making, but the lineup builder’s scenario model may differ slightly.
+
+### Risk 6: Lane Power PIT signals depend on live view
+If vw_lol_slate_lane_power_signal_live_v1 is missing current slate rows, lane-power section will be empty.
+
+## Recommended Future Enhancements
+- Add season parameter instead of hard-coded 2026.
+- Add direct "send scenario to lineup builder" workflow.
+- Add slate-specific starter validation.
+- Add clearer team-name mapping diagnostic.
+- Add export of suggested scenario notes.
+- Add side-by-side Bayes vs Lane Power vs Team Series profile summary.
+- Add warning if historical data freshness is old.
+
+## Documentation Status
+Category: Streamlit pre-lock team overview / scenario research app
+Consumes: slate player table, lane ratings, team profiles, Bayes views, lane power view, manual starters
+Creates: No persistent data
+Run frequency: Slate days pre-lock
+Pre-lock workflow: Yes
+Post-results workflow: No, except it benefits from fresh historical results
+Critical dependency: dbo.dk_lol_slate_player, manual_starters.csv, team series profiles, Bayes/lane views
+Critical risk: team-name matching, hard-coded season, missing live lane-power rows

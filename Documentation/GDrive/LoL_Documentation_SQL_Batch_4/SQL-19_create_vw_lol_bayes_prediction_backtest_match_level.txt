@@ -1,0 +1,239 @@
+# SQL-19_create_vw_lol_bayes_prediction_backtest_match_level
+
+## Source SQL File
+19_create_vw_lol_bayes_prediction_backtest_match_level.sql
+
+## Purpose
+Creates a match-level view from team-side Bayes backtest rows.
+
+In plain English:
+The backtest table stores two rows per series, one from each team's perspective. This view converts those into one row per historical series, selecting the predicted winner and comparing it to the actual winner and score type.
+
+This is the main easy-to-read Bayes backtest summary view.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_bayes_prediction_backtest_match_level
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_bayes_prediction_backtest
+
+## Data It Creates
+Creates one row per:
+
+target_series_id
+
+## Grain
+One row per historical match/series.
+
+## Main Filters
+The base CTE filters to:
+
+prediction_source = 'historical_point_in_time_bayes'
+
+## Main Logic
+
+### base CTE
+Reads team-side prediction rows from dbo.lol_bayes_prediction_backtest.
+
+### ranked CTE
+Creates:
+- prediction_rank:
+  - ranks team-side rows by bayes_win_pct DESC, similar_sample DESC, teamname
+- team_order:
+  - assigns team_a and team_b by alphabetical teamname
+
+### team_a / team_b CTEs
+Pulls the two team-side rows into match-level columns.
+
+### best_prediction CTE
+Selects the team-side row with the highest bayes_win_pct.
+
+This becomes predicted_winner_teamname.
+
+### actual_winner CTE
+Determines:
+- actual_winner_teamname
+- actual_loser_teamname
+- actual_match_score
+
+actual_match_score maps:
+- 2-0 / 0-2 -> 2-0
+- 2-1 / 1-2 -> 2-1
+
+### Final SELECT
+Outputs:
+- team A/B probabilities
+- team A/B sample types
+- predicted winner
+- predicted match score
+- actual winner
+- actual match score
+- match-level accuracy flags
+- confidence label
+
+## Output Columns
+- target_series_id
+- league
+- season
+- target_series_date
+- team_a
+- team_b
+- team_a_bayes_win_pct
+- team_b_bayes_win_pct
+- team_a_suggested_path
+- team_b_suggested_path
+- team_a_sample_type
+- team_b_sample_type
+- team_a_similar_sample
+- team_b_similar_sample
+- team_a_strength_matchup
+- team_b_strength_matchup
+- team_a_mid_matchup
+- team_b_mid_matchup
+- team_a_bot_matchup
+- team_b_bot_matchup
+- team_a_sup_matchup
+- team_b_sup_matchup
+- predicted_winner_teamname
+- predicted_match_score
+- predicted_team_path
+- predicted_winner_bayes_win_pct
+- prediction_sample_type
+- prediction_similar_sample
+- predicted_team_p_2_0
+- predicted_team_p_2_1
+- predicted_team_p_1_2
+- predicted_team_p_0_2
+- actual_winner_teamname
+- actual_loser_teamname
+- actual_match_score
+- match_winner_correct
+- match_score_correct
+- match_winner_and_score_correct
+- match_confidence_label
+- dfs_note
+- prior_weight
+- created_at
+- updated_at
+
+## Confidence Label Logic
+The view labels confidence as:
+
+- League Prior Only -> Low confidence: league prior only.
+- similar_sample < 8 -> Thin sample: directional only.
+- bayes_win_pct >= 65 -> Strong model lean.
+- bayes_win_pct >= 58 -> Moderate model lean.
+- bayes_win_pct >= 52 -> Small model lean.
+- else -> No clear model lean.
+
+## What Uses This Data
+Known downstream:
+- app_lol_team_overview.py Bayes/backtest interpretation
+- app_lol_command_center.py Bayes Review
+- manual model evaluation
+- future accuracy dashboards
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically when dbo.lol_bayes_prediction_backtest changes.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_prediction_backtest
+
+Usually also requires 18_populate_lol_bayes_prediction_backtest.sql to have been run.
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS match_rows
+FROM dbo.vw_lol_bayes_prediction_backtest_match_level;
+
+Check overall accuracy:
+SELECT
+    league,
+    season,
+    COUNT(*) AS matches,
+    AVG(CAST(match_winner_correct AS FLOAT)) AS winner_accuracy,
+    AVG(CAST(match_score_correct AS FLOAT)) AS score_accuracy,
+    AVG(CAST(match_winner_and_score_correct AS FLOAT)) AS winner_and_score_accuracy
+FROM dbo.vw_lol_bayes_prediction_backtest_match_level
+GROUP BY league, season
+ORDER BY season DESC, league;
+
+Check confidence accuracy:
+SELECT
+    league,
+    match_confidence_label,
+    COUNT(*) AS matches,
+    AVG(CAST(match_winner_correct AS FLOAT)) AS winner_accuracy,
+    AVG(CAST(match_score_correct AS FLOAT)) AS score_accuracy,
+    AVG(predicted_winner_bayes_win_pct) AS avg_bayes_win_pct,
+    AVG(prediction_similar_sample) AS avg_similar_sample
+FROM dbo.vw_lol_bayes_prediction_backtest_match_level
+GROUP BY league, match_confidence_label
+ORDER BY league, matches DESC;
+
+Check latest rows:
+SELECT TOP 100
+    target_series_date,
+    league,
+    team_a,
+    team_b,
+    predicted_winner_teamname,
+    predicted_match_score,
+    actual_winner_teamname,
+    actual_match_score,
+    match_winner_correct,
+    match_score_correct,
+    match_confidence_label
+FROM dbo.vw_lol_bayes_prediction_backtest_match_level
+ORDER BY target_series_date DESC;
+
+## Important Risk Areas
+
+### Risk 1: Best prediction is highest bayes_win_pct
+This is reasonable, but if both team rows are around 50%, the model can still force a winner. Confidence label helps, but downstream users should respect it.
+
+### Risk 2: Score correctness is only 2-0 vs 2-1
+The view evaluates match score type, not exact team perspective path. For example, actual team path 0-2 maps to match score 2-0.
+
+### Risk 3: Team A/B alphabetical
+team_a and team_b are ordered by teamname, not slate side or matchup display order.
+
+### Risk 4: Filters to one prediction_source
+Only historical_point_in_time_bayes rows are included.
+
+### Risk 5: One-row view depends on two team-side rows
+If a target_series_id only has one backtest row, team_b columns can be null.
+
+## Recommended Future Enhancements
+- Add bayes_win_gap between predicted winner and opponent.
+- Add "no play / no lean" label when both teams are close to 50%.
+- Add exact_path_correct separate from match_score_correct.
+- Add prior_weight filter or current_prior_weight view.
+- Add source row count validation per series.
+- Add calibration buckets, such as 50-55, 55-60, 60-65, 65+.
+
+## System Flow
+dbo.lol_bayes_prediction_backtest
+    -> dbo.vw_lol_bayes_prediction_backtest_match_level
+    -> Command Center Bayes Review / model evaluation
+
+## Documentation Status
+Category: SQL match-level backtest view
+Consumes: dbo.lol_bayes_prediction_backtest
+Creates: dbo.vw_lol_bayes_prediction_backtest_match_level
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: No, source table refresh only
+Critical dependency: populated backtest table
+Critical risk: forced winner on weak confidence, team-side-to-match-level assumptions

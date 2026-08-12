@@ -1,0 +1,229 @@
+# SQL-23_create_vw_lol_matchup_lane_edge_summary_v1
+
+## Source SQL File
+23_create_vw_lol_matchup_lane_edge_summary_v1.sql
+
+## Purpose
+Creates a team-level lane edge summary from individual lane edge rows.
+
+In plain English:
+This view rolls five lane-level edges into one team-vs-opponent summary per game. It produces total lane edge, carry lane edge, main carry lane edge, count of positive/negative lanes, and edge tiers.
+
+This is the main team-level lane-power summary view.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_matchup_lane_edge_summary_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_matchup_lane_edges_v1
+
+## Data It Creates
+Creates one row per:
+
+game + team + opponent
+
+## Grain
+One row per team perspective per game.
+
+A normal game should produce:
+- 2 rows per game
+- one row per team perspective
+
+## Main Logic
+
+### lane_edges CTE
+Reads core lane edge fields:
+- lane_power_edge
+- lane_power_tier
+- opponent_lane_power_tier
+- lane_edge_tier
+
+### summary CTE
+Pivots lane edges into:
+- top_lane_edge
+- jng_lane_edge
+- mid_lane_edge
+- adc_lane_edge
+- sup_lane_edge
+
+Calculates:
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- clear_edge_lanes
+- clear_disadvantage_lanes
+- positive_edge_lanes
+- negative_edge_lanes
+- positive_carry_edge_lanes
+- negative_carry_edge_lanes
+- opponent_neutral_or_better_lanes
+- opponent_neutral_or_better_carry_lanes
+
+## Carry Lane Definitions
+carry_lane_edge includes:
+- JNG
+- MID
+- ADC
+
+main_carry_lane_edge includes:
+- MID
+- ADC
+
+secondary_lane_edge includes:
+- TOP
+- SUP
+
+## Lane Count Definitions
+clear edge:
+- lane_power_edge >= 10
+
+clear disadvantage:
+- lane_power_edge <= -10
+
+positive edge:
+- lane_power_edge >= 3
+
+negative edge:
+- lane_power_edge <= -3
+
+opponent neutral or better lane:
+- opponent lane_power_tier IN ('Elite', 'Strong', 'Neutral')
+
+## Output Columns
+- model_version
+- game_id
+- game_date
+- league
+- season
+- split
+- team
+- opponent
+- top_lane_edge
+- jng_lane_edge
+- mid_lane_edge
+- adc_lane_edge
+- sup_lane_edge
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- clear_edge_lanes
+- clear_disadvantage_lanes
+- positive_edge_lanes
+- negative_edge_lanes
+- positive_carry_edge_lanes
+- negative_carry_edge_lanes
+- opponent_neutral_or_better_lanes
+- opponent_neutral_or_better_carry_lanes
+- total_lane_edge_tier
+- carry_lane_edge_tier
+
+## Tier Logic
+
+### total_lane_edge_tier
+- >= 50 -> Massive Overall Lane Edge
+- >= 25 -> Strong Overall Lane Edge
+- >= 10 -> Moderate Overall Lane Edge
+- > -10 -> Mostly Even Overall
+- > -25 -> Moderate Overall Lane Disadvantage
+- > -50 -> Strong Overall Lane Disadvantage
+- else -> Massive Overall Lane Disadvantage
+
+### carry_lane_edge_tier
+- >= 30 -> Massive Carry Lane Edge
+- >= 15 -> Strong Carry Lane Edge
+- >= 5 -> Moderate Carry Lane Edge
+- > -5 -> Mostly Even Carry Lanes
+- > -15 -> Moderate Carry Lane Disadvantage
+- > -30 -> Strong Carry Lane Disadvantage
+- else -> Massive Carry Lane Disadvantage
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_upset_resistance_signal_v1
+
+Later downstream:
+- dbo.vw_lol_bayes_lane_power_comparison_v1
+- Team Overview Lane Power display
+- Command Center lane power review
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically when source data changes.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_matchup_lane_edges_v1
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_matchup_lane_edge_summary_v1;
+
+Check expected two rows per game:
+SELECT
+    game_id,
+    COUNT(*) AS team_rows,
+    COUNT(DISTINCT team) AS teams
+FROM dbo.vw_lol_matchup_lane_edge_summary_v1
+GROUP BY game_id
+HAVING COUNT(*) <> 2
+ORDER BY team_rows;
+
+Check tier distribution:
+SELECT
+    league,
+    total_lane_edge_tier,
+    carry_lane_edge_tier,
+    COUNT(*) AS rows_count,
+    AVG(total_lane_edge) AS avg_total_lane_edge,
+    AVG(carry_lane_edge) AS avg_carry_lane_edge
+FROM dbo.vw_lol_matchup_lane_edge_summary_v1
+GROUP BY league, total_lane_edge_tier, carry_lane_edge_tier
+ORDER BY league, rows_count DESC;
+
+## Important Risk Areas
+
+### Risk 1: Depends on complete five-lane edge rows
+If upstream lane edges are missing, totals can be incomplete.
+
+### Risk 2: Carry lane definition is a modeling choice
+JNG/MID/ADC are treated as carry lanes. That is reasonable for LoL DFS, but it should be intentional.
+
+### Risk 3: Team perspective duplication
+There are two rows per game. Positive edge for one team should be negative for the opponent, but missing rows can break symmetry.
+
+### Risk 4: Opponent neutral-or-better logic depends on lane_power_tier
+If tiers are too generous, resistance counts may be inflated.
+
+## Recommended Future Enhancements
+- Add lane_row_count to detect incomplete five-lane summaries.
+- Add edge symmetry validation.
+- Add live-slate version using expected starters.
+- Add role-weighted total_lane_edge instead of simple sum.
+- Add separate MID+ADC carry edge field if needed.
+
+## System Flow
+dbo.vw_lol_matchup_lane_edges_v1
+    -> dbo.vw_lol_matchup_lane_edge_summary_v1
+    -> dbo.vw_lol_upset_resistance_signal_v1
+
+## Documentation Status
+Category: SQL lane-power summary view
+Consumes: dbo.vw_lol_matchup_lane_edges_v1
+Creates: dbo.vw_lol_matchup_lane_edge_summary_v1
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: complete lane edge rows
+Critical risk: incomplete five-lane data, modeling assumptions around carry lanes

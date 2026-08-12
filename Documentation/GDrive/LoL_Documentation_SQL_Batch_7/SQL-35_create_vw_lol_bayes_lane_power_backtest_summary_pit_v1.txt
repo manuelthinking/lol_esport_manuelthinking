@@ -1,0 +1,149 @@
+# SQL-35_create_vw_lol_bayes_lane_power_backtest_summary_pit_v1
+
+## Source SQL File
+35_create_vw_lol_bayes_lane_power_backtest_summary_pit_v1.sql
+
+## Purpose
+Creates a summary view for the point-in-time Bayes vs Lane Power backtest.
+
+In plain English:
+This view summarizes whether Bayes and Lane Power predicted winners correctly across the PIT backtest view. It groups results overall, by Bayes/Lane alignment label, by Bayes favorite status, and by upset resistance tier.
+
+This is the high-level performance summary for the PIT lane-power backtest.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+
+## Data It Creates
+Creates one row per:
+
+summary_group + summary_bucket
+
+## Grain
+One row per summary bucket.
+
+Summary groups:
+- Overall
+- Bayes/Lane Alignment
+- Bayes Favorite Status
+- Upset Resistance Tier
+
+## Main Filter
+The base CTE filters to:
+
+actual_won_series IS NOT NULL
+
+So only evaluated historical rows are included.
+
+## Main Metrics
+Each summary row includes:
+
+- rows_count
+- bayes_eval_rows
+- bayes_winner_accuracy
+- lane_power_eval_rows
+- lane_power_winner_accuracy
+- thin_pit_rows
+
+## Summary Sections
+
+### Overall
+One row:
+- All Series
+
+### Bayes/Lane Alignment
+Groups by:
+- bayes_lane_alignment_label
+
+### Bayes Favorite Status
+Groups by:
+- bayes_favorite_status
+
+### Upset Resistance Tier
+Groups by:
+- upset_resistance_tier
+
+## What Uses This Data
+Likely downstream:
+- Command Center PIT Bayes/Lane Power review
+- manual model review
+- threshold tuning
+- deciding whether PIT Lane Power improves over Bayes
+- future documentation/final workflow chart
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically when dbo.vw_lol_bayes_lane_power_backtest_pit_v1 changes.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1;
+
+Show full summary:
+SELECT
+    *
+FROM dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1
+ORDER BY summary_group, rows_count DESC;
+
+Check overall summary:
+SELECT
+    *
+FROM dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1
+WHERE summary_group = 'Overall';
+
+## Important Risk Areas
+
+### Risk 1: Depends on file 34
+If the PIT backtest view fails, this summary fails.
+
+### Risk 2: Team-side interpretation
+The source view is team-perspective rows. The summary is not necessarily one row per match.
+
+### Risk 3: No league/date grouping
+This summary blends leagues and dates unless manually filtered with another query.
+
+### Risk 4: Lane Power eval rows may be lower
+Lane Power does not evaluate rows where rated_lane_rows < 3 or carry edge is too close. This is why lane_power_eval_rows may be smaller than rows_count.
+
+### Risk 5: Thin PIT rows matter
+thin_pit_rows is included and should be watched. A high thin PIT count means lane-power evidence is sparse.
+
+## Recommended Future Enhancements
+- Add league-level PIT summary.
+- Add match-level PIT summary.
+- Add warning flag summary.
+- Add date/month breakdown.
+- Add minimum sample filters.
+- Add comparison against non-PIT backtest summary.
+
+## System Flow
+dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+    -> dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1
+    -> model review / Command Center summary
+
+## Documentation Status
+Category: SQL PIT backtest summary view
+Consumes: dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+Creates: dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: PIT backtest view
+Critical risk: team-side row interpretation, no league grouping, thin PIT rows

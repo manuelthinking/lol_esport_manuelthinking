@@ -1,0 +1,284 @@
+# Script-build_lane_matchups
+
+## Purpose
+Builds lane matchup records by pairing blue-side and red-side players from the same game and position.
+
+In plain English:
+It takes player-game rows from dbo.fact_lol_player_game and creates one lane matchup row per game/position.
+
+For each game, it should create five lane matchup rows:
+- top
+- jng
+- mid
+- bot
+- sup
+
+Each row compares the blue-side player against the red-side player in the same lane.
+
+## Data It Consumes
+
+### Source Table
+- dbo.fact_lol_player_game
+
+The script reads player rows where:
+position IN ('top', 'jng', 'mid', 'bot', 'sup')
+
+## Main Fields Read
+- game_id
+- league
+- season
+- split
+- patch
+- game_date
+- side
+- position
+- player_name
+- player_id
+- team_name
+- champion
+- result
+- kills
+- deaths
+- assists
+- dk_points
+- cs
+- cspm
+- gold_diff_10
+- xp_diff_10
+- cs_diff_10
+- dpm
+- damage_share
+- vision_score
+- game_length_seconds
+
+## Data It Creates
+
+### Target Table
+- dbo.fact_lol_lane_matchup
+
+This is a physical SQL table.
+
+The table is created if it does not already exist.
+
+## Grain
+One row per:
+- game_id
+- position
+
+Example:
+Game 12345 / mid
+    blue mid player vs red mid player
+
+## Refresh Behavior
+The script truncates the entire target table:
+
+TRUNCATE TABLE dbo.fact_lol_lane_matchup
+
+Then inserts the rebuilt lane matchup rows.
+
+This is a full rebuild table.
+
+## Main Output Fields
+- game_id
+- league
+- season
+- split
+- patch
+- game_date
+- position
+- blue_player
+- red_player
+- blue_player_id
+- red_player_id
+- blue_team
+- red_team
+- blue_champion
+- red_champion
+- blue_result
+- red_result
+- blue_kills
+- red_kills
+- kill_diff
+- blue_deaths
+- red_deaths
+- death_diff
+- blue_assists
+- red_assists
+- assist_diff
+- blue_dk
+- red_dk
+- dk_diff
+- blue_cs
+- red_cs
+- cs_diff
+- blue_cspm
+- red_cspm
+- cspm_diff
+- blue_gold_diff_10
+- red_gold_diff_10
+- gold_diff_10_diff
+- blue_xp_diff_10
+- red_xp_diff_10
+- xp_diff_10_diff
+- blue_cs_diff_10
+- red_cs_diff_10
+- cs_diff_10_diff
+- blue_dpm
+- red_dpm
+- dpm_diff
+- blue_damage_share
+- red_damage_share
+- damage_share_diff
+- blue_vision_score
+- red_vision_score
+- vision_score_diff
+- game_length_seconds
+
+## Diff Logic
+For each comparison field, the script calculates:
+
+blue value - red value
+
+Examples:
+- kill_diff = blue_kills - red_kills
+- dk_diff = blue_dk - red_dk
+- cs_diff_10_diff = blue_cs_diff_10 - red_cs_diff_10
+
+Positive value means the blue-side player was ahead.
+Negative value means the red-side player was ahead.
+
+## What Uses This Data
+This table is useful for:
+- lane strength modeling
+- lane matchup analysis
+- player/lane rating logic
+- identifying strong/weak lanes
+- potential matchup-based projection adjustments
+- Team Overview / Lane Power sections
+
+Likely downstream items include:
+- lane strength bucket views
+- lane matchup views
+- team overview app
+- lineup builder projection adjustments, if lane power is incorporated
+
+## Run Frequency
+Run after dbo.fact_lol_player_game is refreshed.
+
+This is part of the historical-results refresh chain.
+
+Recommended order:
+1. Script-ingest_oracle_elixir
+2. Script-build_player_games
+3. Script-build_lane_matchups
+4. downstream lane/team/Bayes/profile views or scripts
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\build_lane_matchups.py
+
+## Required Before Running
+Make sure dbo.fact_lol_player_game is populated and current.
+
+## Output Validation
+The script prints:
+- connected database
+- player-game rows loaded
+- blue rows
+- red rows
+- lane matchup rows created
+- inserted lane matchup rows
+- final SQL row count
+
+Good signs:
+- player-game rows > 0
+- blue rows and red rows are close
+- lane matchup rows should usually equal unique games * 5
+- final SQL row count equals inserted rows
+
+## SQL Health Checks
+
+Check row counts:
+SELECT
+    league,
+    season,
+    COUNT(*) AS lane_matchup_rows,
+    COUNT(DISTINCT game_id) AS unique_games,
+    MIN(game_date) AS first_game_date,
+    MAX(game_date) AS last_game_date
+FROM dbo.fact_lol_lane_matchup
+GROUP BY league, season
+ORDER BY season DESC, league;
+
+Check expected five lanes per game:
+SELECT
+    game_id,
+    COUNT(*) AS lane_rows
+FROM dbo.fact_lol_lane_matchup
+GROUP BY game_id
+HAVING COUNT(*) <> 5
+ORDER BY game_id;
+
+Check latest lane matchups:
+SELECT TOP 50
+    game_date,
+    league,
+    game_id,
+    position,
+    blue_team,
+    blue_player,
+    red_team,
+    red_player,
+    dk_diff,
+    gold_diff_10_diff,
+    cs_diff_10_diff,
+    dpm_diff
+FROM dbo.fact_lol_lane_matchup
+ORDER BY game_date DESC, game_id, position;
+
+## Important Risk Areas
+
+### Risk 1: Full truncate and rebuild
+The table is fully truncated before insert. If the insert fails, the target table can be left empty until rerun.
+
+### Risk 2: Depends completely on fact_lol_player_game
+If player-game data is stale or missing, lane matchup data will also be stale or missing.
+
+### Risk 3: Requires clean blue/red side values
+The script expects side values to normalize to:
+- blue
+- red
+
+Bad or missing side data will reduce matchup rows.
+
+### Risk 4: Requires one blue and one red player per position
+If a game is missing a player row for a position, that lane matchup will not be created.
+
+### Risk 5: Diff values are blue-minus-red
+This is important when interpreting the data. Positive does not mean "winner"; it means blue side outperformed red side for that field.
+
+## Recommended Future Enhancements
+- Add a game/position uniqueness constraint to prevent accidental duplicates.
+- Add a validation warning when lane rows per game are not 5.
+- Add red-minus-blue alternate fields only if needed for easier interpretation.
+- Add a derived winning-laner flag by position.
+- Add lane matchup rating outputs for downstream model use.
+
+## System Flow
+raw.oracle_elixir_match_data_staging
+    -> Script-build_player_games
+    -> dbo.fact_lol_player_game
+    -> Script-build_lane_matchups
+    -> dbo.fact_lol_lane_matchup
+    -> lane strength views / team overview / matchup analysis
+
+## Documentation Status
+Category: Historical lane matchup builder
+Consumes: dbo.fact_lol_player_game
+Creates: dbo.fact_lol_lane_matchup
+Run frequency: After player-game table is refreshed
+Daily pre-lock required: Conditional, only if latest Oracle data is being used
+Daily post-results required: Yes, if new games were added
+Downstream use: lane strength modeling, Team Overview, lane power adjustments
+Critical dependency: dbo.fact_lol_player_game
+Critical risk: full truncate/rebuild, missing blue/red player rows

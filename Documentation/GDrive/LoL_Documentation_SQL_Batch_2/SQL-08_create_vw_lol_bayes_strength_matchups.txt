@@ -1,0 +1,233 @@
+# SQL-08_create_vw_lol_bayes_strength_matchups
+
+## Source SQL File
+08_create_vw_lol_bayes_strength_matchups.sql
+
+## Purpose
+Creates the combined Bayesian strength matchup view.
+
+In plain English:
+This view joins team-strength matchup buckets with lane-strength matchup buckets so the model can evaluate historical examples that match both overall team strength and lane strength.
+
+This is one of the core views used by the Streamlit Bayesian Matchup Read.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_bayes_strength_matchups
+
+This is a view.
+
+## Data It Consumes
+
+### Source Views
+- dbo.vw_lol_team_strength_matchups
+- dbo.vw_lol_lane_strength_matchups
+
+## Data It Creates
+Creates a view with one row per:
+
+team per historical series
+
+## Grain
+one row per team per historical series
+
+Key identifiers:
+- series_id
+- teamname
+- opponent_teamname
+
+## Main Logic
+The view selects team-strength fields from dbo.vw_lol_team_strength_matchups and lane-strength fields from dbo.vw_lol_lane_strength_matchups.
+
+It joins on:
+- series_id
+- league
+- season
+- normalized teamname
+- normalized opponent_teamname
+
+## Output Columns
+
+### Series Context
+- series_id
+- league
+- season
+- series_date
+- teamname
+- opponent_teamname
+- series_result
+- won_series
+- games_played
+- wins
+- losses
+
+### Team Strength Layer
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+- team_smoothed_win_rate
+- opponent_smoothed_win_rate
+- team_series_count
+- opponent_series_count
+- team_strength_sample_label
+- opponent_strength_sample_label
+
+### Lane Strength Layer
+- team_top_strength
+- team_jng_strength
+- team_mid_strength
+- team_bot_strength
+- team_sup_strength
+- opp_top_strength
+- opp_jng_strength
+- opp_mid_strength
+- opp_bot_strength
+- opp_sup_strength
+- top_lane_matchup_bucket
+- jng_lane_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+- team_top_dk_index
+- team_jng_dk_index
+- team_mid_dk_index
+- team_bot_dk_index
+- team_sup_dk_index
+- opp_top_dk_index
+- opp_jng_dk_index
+- opp_mid_dk_index
+- opp_bot_dk_index
+- opp_sup_dk_index
+
+### DFS Context
+- player_dk_fp_base
+- player_dk_fp_with_gnp
+- team_slot_dk_fp_base
+- team_slot_dk_fp_with_gnp
+- total_team_kills
+- total_team_deaths
+- avg_game_length_minutes
+- total_game_length_minutes
+
+## What Uses This Data
+Known downstream:
+- app_lol_team_overview.py Bayesian Matchup Read
+
+Likely downstream:
+- Bayes prediction tracking
+- Bayes backtesting
+- scenario recommendation logic
+- ownership training view
+- Command Center Bayes review
+
+In app_lol_team_overview.py, this view is loaded by the Bayesian strength matchup logic and compared against the current slate’s team/lane strength buckets.
+
+## Run Frequency
+Run when creating or updating the SQL view definition.
+
+Because this is a view, it updates automatically when the upstream views update.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_team_strength_matchups
+- dbo.vw_lol_lane_strength_matchups
+
+Those in turn depend on:
+- dbo.lol_team_series_results
+- dbo.vw_lol_team_strength_bucket
+- dbo.vw_lol_lane_strength_bucket
+- dbo.fact_lol_player_game
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_bayes_strength_matchups;
+
+Check sample counts by strength/lane bucket:
+SELECT
+    league,
+    season,
+    strength_matchup_bucket,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket,
+    COUNT(*) AS sample_rows,
+    AVG(CAST(won_series AS FLOAT)) AS win_rate
+FROM dbo.vw_lol_bayes_strength_matchups
+GROUP BY
+    league,
+    season,
+    strength_matchup_bucket,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket
+ORDER BY sample_rows DESC;
+
+Check missing lane layer:
+SELECT TOP 100
+    league,
+    season,
+    series_date,
+    teamname,
+    opponent_teamname,
+    strength_matchup_bucket,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket
+FROM dbo.vw_lol_bayes_strength_matchups
+WHERE mid_lane_matchup_bucket IS NULL
+   OR bot_lane_matchup_bucket IS NULL
+   OR sup_lane_matchup_bucket IS NULL
+ORDER BY series_date DESC;
+
+## Important Risk Areas
+
+### Risk 1: Inherits hard-coded 2026 from upstream views
+The direct SQL file does not hard-code 2026, but both upstream views likely do. This view inherits that season limitation.
+
+### Risk 2: Left join to lane strength
+If the lane-strength matchup view does not match, team-strength rows still appear but lane columns can be NULL.
+
+### Risk 3: Team/opponent name matching
+The join depends on normalized teamname and opponent_teamname. Mismatches can lose lane fields.
+
+### Risk 4: Potential point-in-time leakage
+This view uses season-level strength buckets from completed data. For true historical backtesting, a point-in-time version may be needed.
+
+### Risk 5: Sample fragmentation
+Combining team strength with MID/BOT/SUP lane buckets can create very small samples. The Streamlit app handles this by falling back to broader samples, but sample counts need monitoring.
+
+## Recommended Future Enhancements
+- Create a point-in-time version for backtesting.
+- Add season/date filtering strategy.
+- Add unknown/null lane bucket fallback in the final view if desired.
+- Add sample count summary view.
+- Add Command Center health checks for sample fragmentation.
+- Consider current-season and recent-form variants.
+
+## System Flow
+dbo.lol_team_series_results
+    -> dbo.vw_lol_team_strength_bucket
+    -> dbo.vw_lol_team_strength_matchups
+
+dbo.fact_lol_player_game
+    -> dbo.vw_lol_lane_strength_bucket
+    -> dbo.vw_lol_lane_strength_matchups
+
+both:
+    -> dbo.vw_lol_bayes_strength_matchups
+    -> app_lol_team_overview Bayesian Matchup Read
+    -> scenario decisions / lineup builder inputs
+
+## Documentation Status
+Category: SQL view
+Consumes: dbo.vw_lol_team_strength_matchups, dbo.vw_lol_lane_strength_matchups
+Creates: dbo.vw_lol_bayes_strength_matchups
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, but upstream data must be current
+Daily post-results required: Source refresh only
+Critical dependency: upstream team/lane strength matchup views
+Critical risk: inherited hard-coded season, null lane joins, small sample fragmentation

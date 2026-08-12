@@ -1,0 +1,225 @@
+# Script-build_lol_team_game_stats
+
+## Purpose
+Builds the team-level game stats table from an Oracle's Elixir match data CSV.
+
+It converts raw Oracle rows into one row per team per game.
+
+For each completed game, the script should create:
+- Team A row
+- Team B row
+
+## Data It Consumes
+
+### Main Input
+Oracle's Elixir CSV file.
+
+Can be passed with:
+--input-csv
+
+If omitted, the script searches these folders:
+- C:\DailyDFS\LoL\data
+- C:\DailyDFS\LoL\data\raw
+- C:\DailyDFS\LoL\data\oracle_elixir
+- C:\DailyDFS\LoL\data\processed
+
+It looks for CSV filenames containing:
+- oracleselixir
+- oracle
+- lol_esports_match_data
+
+## Required CSV Columns
+- gameid
+- league
+- year
+- split
+- playoffs
+- date
+- game
+- patch
+- participantid
+- side
+- position
+- teamname
+- gamelength
+- result
+- kills
+- deaths
+- assists
+- teamkills
+- teamdeaths
+- firstblood
+- dragons
+- barons
+- towers
+- damagetochampions
+- dpm
+- total cs
+- golddiffat10
+- xpdiffat10
+- csdiffat10
+- golddiffat15
+- xpdiffat15
+- csdiffat15
+
+## Data It Creates
+
+### Target Table
+- dbo.lol_team_game_stats
+
+Primary key:
+- gameid
+- teamname
+
+## Grain
+One row per team per game.
+
+## Player DK Scoring Logic
+player_dk_fp =
+(kills * 3)
++ (assists * 2)
+- deaths
++ (cs * 0.02)
++ ka_bonus
+
+ka_bonus = +2 if kills >= 10 OR assists >= 10
+
+## TEAM Slot DK Scoring Logic
+team_slot_dk_fp =
+towers
++ dragons * 2
++ barons * 3
++ firstblood * 2
++ result * 2
++ win_under_30_bonus
+
+win_under_30_bonus = +2 if result = 1 and gamelength < 1800 seconds.
+
+## Output Fields
+- gameid
+- league
+- year
+- split
+- playoffs
+- date
+- game_date
+- game_number
+- patch
+- side
+- teamname
+- opponent
+- is_win
+- game_length_seconds
+- game_length_minutes
+- team_kills
+- team_deaths
+- team_row_kills
+- team_row_deaths
+- team_row_assists
+- firstblood
+- dragons
+- barons
+- towers
+- player_count
+- player_dk_fp_sum
+- team_slot_dk_fp_base
+- player_kills_sum
+- player_deaths_sum
+- player_assists_sum
+- player_cs_sum
+- player_damage_sum
+- player_dpm_sum
+- avg_gold_diff_10
+- avg_xp_diff_10
+- avg_cs_diff_10
+- avg_gold_diff_15
+- avg_xp_diff_15
+- avg_cs_diff_15
+- kill_check_diff
+- death_check_diff
+
+## Validation Fields
+kill_check_diff = player_kills_sum - team_kills
+death_check_diff = player_deaths_sum - team_deaths
+
+Usually both should be zero.
+
+## What Uses This Data
+Direct downstream script:
+- Script-build_lol_team_series_results
+
+Overall chain:
+Oracle's Elixir CSV
+    -> Script-build_lol_team_game_stats
+    -> dbo.lol_team_game_stats
+    -> Script-build_lol_team_series_results
+    -> dbo.lol_team_series_results
+    -> Script-build_lol_team_series_profiles
+    -> dbo.lol_team_series_profiles
+    -> Script-build_lol_top_lineups
+
+## Run Frequency
+Run after new Oracle data is downloaded.
+
+This is mostly a post-results / historical refresh script.
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\build_lol_team_game_stats.py --input-csv "C:\DailyDFS\LoL\data\oracle_elixir\YOUR_ORACLE_FILE.csv"
+
+## Refresh Behavior
+The script refreshes by year:
+1. Reads Oracle CSV.
+2. Builds team-game rows.
+3. Identifies years in output.
+4. Deletes existing rows for those years.
+5. Inserts rebuilt rows.
+
+## Important Risk Areas
+- Auto-detecting latest Oracle CSV can choose the wrong file.
+- Full-year replacement is dangerous if the CSV is partial-year only.
+- Oracle column names must match.
+- Position names must match expected values: top, jng, mid, bot, sup, team.
+- TEAM slot scoring is custom-calculated.
+
+## Health Checks
+SELECT
+    [year],
+    league,
+    COUNT(*) AS team_game_rows,
+    COUNT(DISTINCT gameid) AS unique_games,
+    MIN(game_date) AS first_game_date,
+    MAX(game_date) AS last_game_date
+FROM dbo.lol_team_game_stats
+GROUP BY [year], league
+ORDER BY [year] DESC, league;
+
+SELECT
+    gameid,
+    COUNT(DISTINCT teamname) AS team_count,
+    MIN(game_date) AS game_date,
+    MIN(league) AS league,
+    STRING_AGG(teamname, ' vs ') AS teams
+FROM dbo.lol_team_game_stats
+GROUP BY gameid
+HAVING COUNT(DISTINCT teamname) <> 2
+ORDER BY game_date DESC;
+
+SELECT TOP 100
+    game_date,
+    league,
+    gameid,
+    teamname,
+    opponent,
+    player_count
+FROM dbo.lol_team_game_stats
+WHERE player_count <> 5
+ORDER BY game_date DESC;
+
+## Documentation Status
+Category: Oracle Elixir team-game aggregation script
+Consumes: Oracle's Elixir CSV
+Creates: dbo.lol_team_game_stats
+Run frequency: After new Oracle data is downloaded
+Post-results workflow: Yes
+Critical risk: partial-year CSV replacement

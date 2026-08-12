@@ -1,0 +1,252 @@
+# SQL-15_create_vw_lol_lane_strength_matchups_point_in_time
+
+## Source SQL File
+15_create_vw_lol_lane_strength_matchups_point_in_time.sql
+
+## Purpose
+Creates point-in-time lane strength matchup buckets.
+
+In plain English:
+For each historical target series, this view compares each team's point-in-time lane strength against the opponent's point-in-time lane strength. It then pivots those comparisons into one row per team/series with TOP/JNG/MID/BOT/SUP matchup buckets.
+
+This view avoids future-data leakage because its source lane strengths are calculated only from games before the target series.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_lane_strength_matchups_point_in_time
+
+This is a view.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_lane_strength_bucket_point_in_time
+
+## Data It Creates
+Creates one row per:
+
+team per historical target series
+
+## Grain
+One row per:
+
+- target_series_id
+- teamname
+
+## Main Logic
+
+### base CTE
+Reads point-in-time lane bucket rows.
+
+### with_opponent CTE
+Self-joins each team lane row to the opponent's lane row for the same target series and position.
+
+Join conditions:
+- same target_series_id
+- same league
+- same season
+- same position
+- team opponent matches opponent teamname
+- team teamname matches opponent opponent_teamname
+
+### pivoted CTE
+Pivots one row per position into one row per team/series.
+
+Creates:
+- team lane strength by role
+- opponent lane strength by role
+- lane matchup bucket by role
+- sample labels
+- DK indexes
+- games counts
+- kill/assist indexes
+
+### Final SELECT
+Fills missing lane strength values as unknown and creates:
+- top_lane_matchup_bucket
+- jng_lane_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+
+## Output Columns
+- target_series_id
+- league
+- season
+- target_series_date
+- teamname
+- opponent_teamname
+- actual_series_result
+- actual_won_series
+- actual_game_wins
+- actual_game_losses
+- team_top_strength
+- team_jng_strength
+- team_mid_strength
+- team_bot_strength
+- team_sup_strength
+- opponent_top_strength
+- opponent_jng_strength
+- opponent_mid_strength
+- opponent_bot_strength
+- opponent_sup_strength
+- top_lane_matchup_bucket
+- jng_lane_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+- team_top_sample_label
+- team_jng_sample_label
+- team_mid_sample_label
+- team_bot_sample_label
+- team_sup_sample_label
+- opponent_top_sample_label
+- opponent_jng_sample_label
+- opponent_mid_sample_label
+- opponent_bot_sample_label
+- opponent_sup_sample_label
+- team_top_dk_index
+- team_jng_dk_index
+- team_mid_dk_index
+- team_bot_dk_index
+- team_sup_dk_index
+- opponent_top_dk_index
+- opponent_jng_dk_index
+- opponent_mid_dk_index
+- opponent_bot_dk_index
+- opponent_sup_dk_index
+- team_top_games
+- team_jng_games
+- team_mid_games
+- team_bot_games
+- team_sup_games
+- opponent_top_games
+- opponent_jng_games
+- opponent_mid_games
+- opponent_bot_games
+- opponent_sup_games
+- team_top_kill_index
+- team_jng_kill_index
+- team_mid_kill_index
+- team_bot_kill_index
+- team_sup_assist_index
+- opponent_top_kill_index
+- opponent_jng_kill_index
+- opponent_mid_kill_index
+- opponent_bot_kill_index
+- opponent_sup_assist_index
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+Later downstream:
+- Bayes point-in-time backtesting
+- scenario confidence rules
+- lane-power validation
+- Team Overview if upgraded to PIT model
+
+## Run Frequency
+Run when creating or updating the view definition.
+
+Because this is a view, it updates automatically when the source point-in-time lane bucket view changes.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_lane_strength_bucket_point_in_time
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_lane_strength_matchups_point_in_time;
+
+Check lane matchup bucket distribution:
+SELECT
+    league,
+    season,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket,
+    COUNT(*) AS rows_count,
+    AVG(CAST(actual_won_series AS FLOAT)) AS actual_win_rate
+FROM dbo.vw_lol_lane_strength_matchups_point_in_time
+GROUP BY
+    league,
+    season,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket
+ORDER BY rows_count DESC;
+
+Check unknown lane matchup rows:
+SELECT TOP 100
+    league,
+    season,
+    target_series_date,
+    teamname,
+    opponent_teamname,
+    top_lane_matchup_bucket,
+    jng_lane_matchup_bucket,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket
+FROM dbo.vw_lol_lane_strength_matchups_point_in_time
+WHERE top_lane_matchup_bucket LIKE 'unknown%'
+   OR jng_lane_matchup_bucket LIKE 'unknown%'
+   OR mid_lane_matchup_bucket LIKE 'unknown%'
+   OR bot_lane_matchup_bucket LIKE 'unknown%'
+   OR sup_lane_matchup_bucket LIKE 'unknown%'
+ORDER BY target_series_date DESC;
+
+Check expected two rows per series:
+SELECT
+    target_series_id,
+    COUNT(*) AS rows_count,
+    COUNT(DISTINCT teamname) AS teams
+FROM dbo.vw_lol_lane_strength_matchups_point_in_time
+GROUP BY target_series_id
+HAVING COUNT(*) <> 2
+ORDER BY rows_count;
+
+## Important Risk Areas
+
+### Risk 1: Inherits hard-coded 2026
+This view inherits the season limitation from view 14.
+
+### Risk 2: Self-join by team/opponent/position
+If opponent team names do not match cleanly, opponent lane fields become unknown.
+
+### Risk 3: Missing lane rows can become unknown buckets
+This prevents null crashes but may mask data quality problems.
+
+### Risk 4: One row per team perspective
+Each target series should have two rows. Downstream logic should not treat the rows as unique matchups unless it expects team perspective rows.
+
+### Risk 5: Carry-lane emphasis is not built in
+The view exposes all lanes, but downstream logic decides whether MID/BOT/SUP matter more.
+
+## Recommended Future Enhancements
+- Add unknown-rate Command Center health check.
+- Add carry_lane_matchup_summary field.
+- Add current-slate version for pre-lock use.
+- Remove/parameterize hard-coded season in upstream view.
+- Add validation for two rows per target_series_id.
+
+## System Flow
+dbo.vw_lol_lane_strength_bucket_point_in_time
+    -> dbo.vw_lol_lane_strength_matchups_point_in_time
+    -> dbo.vw_lol_bayes_strength_matchups_point_in_time
+    -> point-in-time Bayes backtesting
+
+## Documentation Status
+Category: SQL point-in-time view
+Consumes: dbo.vw_lol_lane_strength_bucket_point_in_time
+Creates: dbo.vw_lol_lane_strength_matchups_point_in_time
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: point-in-time lane bucket view
+Critical risk: unknown opponent lanes, inherited hard-coded season

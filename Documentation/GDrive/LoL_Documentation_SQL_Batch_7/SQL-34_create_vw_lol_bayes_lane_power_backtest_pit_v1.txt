@@ -1,0 +1,305 @@
+# SQL-34_create_vw_lol_bayes_lane_power_backtest_pit_v1
+
+## Source SQL File
+34_create_vw_lol_bayes_lane_power_backtest_pit_v1.sql
+
+## Purpose
+Creates the main point-in-time Bayes vs Lane Power backtest view.
+
+In plain English:
+This view joins point-in-time Bayes strength predictions with point-in-time lane-power edge summaries, then evaluates whether Bayes and/or Lane Power would have predicted the correct winner historically.
+
+This is the clean PIT version of the Bayes/Lane Power comparison backtest.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+### Source View
+- dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+
+## Data It Creates
+Creates one row per:
+
+target_series_id + team + opponent
+
+## Grain
+One row per team perspective per historical target series.
+
+## Main Filters
+Bayes source is filtered to:
+- league IN ('LPL', 'LCK')
+- season = 2026
+
+Important:
+This view is hard-coded to season = 2026.
+
+## Main Logic
+
+### bayes CTE
+Reads PIT Bayes strength fields:
+- target_series_id
+- league
+- season
+- target_series_date
+- team
+- opponent
+- actual result
+- team strength buckets
+- smoothed prior win rates
+- team prior series counts
+
+Uses:
+- team_smoothed_prior_series_win_rate AS bayes_win_pct
+- opponent_smoothed_prior_series_win_rate AS opponent_bayes_win_pct
+
+### lane CTE
+Reads all rows from:
+dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+
+### joined CTE
+Left joins lane edge summary to Bayes rows by:
+- target_series_id
+- team
+- opponent
+
+### scored CTE
+Creates:
+- bayes_predicted_win_flag
+- lane_power_predicted_win_flag
+- bayes_favorite_status
+- lane_favorite_status
+- opponent_carry_resistance_level
+- carry_lane_risk_level
+- negative_carry_lane_count_level
+
+### final_scored CTE
+Creates:
+- upset_resistance_score
+- bayes_lane_alignment_label
+- bayes_overconfidence_warning_flag
+- bayes_possible_upset_signal_flag
+- lane_power_breaks_bayes_tie_flag
+- favorite_stomp_support_flag
+
+### Final SELECT
+Adds:
+- backtest_version = bayes_lane_power_pit_v1
+- upset_resistance_tier
+- bayes_winner_correct_flag
+- lane_power_winner_correct_flag
+
+## Prediction Logic
+
+### Bayes Predicted Win Flag
+- bayes_win_pct >= 0.50 -> 1
+- bayes_win_pct < 0.50 -> 0
+- NULL if no Bayes
+
+### Lane Power Predicted Win Flag
+- rated_lane_rows < 3 -> NULL
+- carry_lane_edge >= 5 -> 1
+- carry_lane_edge <= -5 -> 0
+- otherwise NULL
+
+This means Lane Power only makes a win/loss prediction when carry-lane edge is meaningful enough.
+
+## Bayes Favorite Status
+- bayes_win_pct >= 0.65 -> Bayes Strong Favorite
+- bayes_win_pct >= 0.55 -> Bayes Lean Favorite
+- bayes_win_pct > 0.45 -> Bayes Toss-Up
+- bayes_win_pct > 0.35 -> Bayes Lean Underdog
+- else -> Bayes Strong Underdog
+
+## Lane Favorite Status
+- rated_lane_rows < 3 -> Thin PIT Rating
+- total_lane_edge >= 25 -> Lane Favorite
+- total_lane_edge <= -25 -> Lane Underdog
+- total_lane_edge >= 10 -> Small Lane Favorite
+- total_lane_edge <= -10 -> Small Lane Underdog
+- else -> Lane Neutral
+
+## Bayes / Lane Alignment Labels
+Possible labels include:
+- Thin PIT Rating
+- Bayes Favorite / Lane Stomp Support
+- Bayes Favorite / Lane Stomp Warning
+- Bayes Favorite / Carry Lanes Questionable
+- Bayes Underdog / Lane Power Live
+- Bayes Toss-Up / Lane Power Has Lean
+- Bayes and Lane Signal Aligned or Neutral
+
+## Warning / Signal Flags
+
+### bayes_overconfidence_warning_flag
+1 when:
+- rated_lane_rows >= 3
+- bayes_win_pct >= 0.65
+- total_lane_edge >= 25
+- opponent_neutral_or_better_carry_lanes >= 2
+
+### bayes_possible_upset_signal_flag
+1 when:
+- rated_lane_rows >= 3
+- bayes_win_pct <= 0.45
+- carry_lane_edge >= -5
+
+### lane_power_breaks_bayes_tie_flag
+1 when:
+- rated_lane_rows >= 3
+- bayes_win_pct BETWEEN 0.45 AND 0.55
+- ABS(carry_lane_edge) >= 10
+
+### favorite_stomp_support_flag
+1 when:
+- rated_lane_rows >= 3
+- bayes_win_pct >= 0.65
+- total_lane_edge >= 25
+- carry_lane_edge >= 15
+- opponent_neutral_or_better_carry_lanes <= 1
+- negative_carry_edge_lanes = 0
+
+## Upset Resistance Score
+If rated_lane_rows < 3:
+- NULL
+
+Else:
+- opponent_carry_resistance_level * 2
+- plus carry_lane_risk_level * 2
+- plus negative_carry_lane_count_level
+
+## Upset Resistance Tier
+- NULL score -> Thin PIT Rating
+- score >= 8 -> High Resistance
+- score >= 5 -> Medium Resistance
+- score >= 2 -> Low Resistance
+- else -> Minimal Resistance
+
+## Output Columns
+Major output groups:
+- backtest_version
+- target_series_id
+- game_date
+- league
+- season
+- team
+- opponent
+- actual result fields
+- Bayes probability fields
+- strength buckets
+- prior sample counts
+- lane edge fields
+- lane row/rating counts
+- lane edge tiers
+- prediction flags
+- alignment labels
+- warning flags
+- winner correctness flags
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1
+
+Potential downstream:
+- Command Center PIT backtest review
+- model threshold tuning
+- lane-power rule validation
+- deciding how much to trust Lane Power against Bayes
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically when source PIT views update.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+- dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+
+The lane edge summary requires the missing upstream PIT lane edge view.
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_bayes_lane_power_backtest_pit_v1;
+
+Check accuracy:
+SELECT
+    league,
+    COUNT(*) AS rows_count,
+    AVG(CAST(bayes_winner_correct_flag AS FLOAT)) AS bayes_winner_accuracy,
+    AVG(CAST(lane_power_winner_correct_flag AS FLOAT)) AS lane_power_winner_accuracy,
+    SUM(CASE WHEN rated_lane_rows < 3 OR rated_lane_rows IS NULL THEN 1 ELSE 0 END) AS thin_pit_rows
+FROM dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+GROUP BY league
+ORDER BY league;
+
+Check alignment buckets:
+SELECT
+    bayes_lane_alignment_label,
+    COUNT(*) AS rows_count,
+    AVG(CAST(bayes_winner_correct_flag AS FLOAT)) AS bayes_winner_accuracy,
+    AVG(CAST(lane_power_winner_correct_flag AS FLOAT)) AS lane_power_winner_accuracy
+FROM dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+GROUP BY bayes_lane_alignment_label
+ORDER BY rows_count DESC;
+
+Check warning flags:
+SELECT
+    SUM(bayes_overconfidence_warning_flag) AS bayes_overconfidence_warnings,
+    SUM(bayes_possible_upset_signal_flag) AS bayes_possible_upset_signals,
+    SUM(lane_power_breaks_bayes_tie_flag) AS lane_power_breaks_bayes_ties,
+    SUM(favorite_stomp_support_flag) AS favorite_stomp_support_flags,
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_bayes_lane_power_backtest_pit_v1;
+
+## Important Risk Areas
+
+### Risk 1: Hard-coded 2026
+This view filters to season = 2026.
+
+### Risk 2: Depends on missing PIT lane edge chain
+If dbo.vw_lol_matchup_lane_edges_pit_v1 is missing, file 33 breaks, and this view breaks.
+
+### Risk 3: Lane Power predicts only when carry edge is strong enough
+This is intentional, but lane_power_eval_rows will be lower than total rows.
+
+### Risk 4: Bayes probability is taken from smoothed team win rate
+This view uses team_smoothed_prior_series_win_rate as Bayes win percentage, not the fuller sample-type/path Bayes probabilities from the backtest table.
+
+### Risk 5: Team-side rows
+This is team perspective. There should be two rows per target series.
+
+## Recommended Future Enhancements
+- Remove/parameterize 2026.
+- Add match-level PIT summary.
+- Add backtest by league.
+- Compare this PIT lane-power logic against snapshot/non-PIT comparison.
+- Add stronger handling for thin PIT rating rows.
+- Add file 32 documentation and dependency validation.
+
+## System Flow
+dbo.vw_lol_bayes_strength_matchups_point_in_time
+dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+    -> dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+    -> dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1
+
+## Documentation Status
+Category: SQL PIT Bayes/Lane Power backtest view
+Consumes: PIT Bayes strength matchup view, PIT lane edge summary view
+Creates: dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: PIT lane edge chain and PIT Bayes view
+Critical risk: hard-coded 2026, missing file 32, team-side row interpretation, Bayes definition difference

@@ -1,0 +1,189 @@
+# Script-build_lol_team_series_results
+
+## Purpose
+Builds team-level series results from individual team-game stats.
+
+It takes game-by-game team data and rolls it up into one row per team per series.
+
+For one best-of-3 series, it creates:
+- one row for Team A
+- one row for Team B
+
+Each row shows:
+- series result
+- series win/loss
+- games played
+- DK points
+- kills/deaths/objectives
+- early-game metrics
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_team_game_stats
+
+## Data It Creates
+
+### Target Table
+- dbo.lol_team_series_results
+
+Physical SQL table.
+
+Primary key:
+- series_id
+- teamname
+
+## Grain
+One row per team per series.
+
+## Series ID Logic
+series_id is generated from:
+- league
+- year
+- split
+- playoffs
+- game_date
+- sorted team pair
+
+## Main Fields Created
+- series_id
+- league
+- year
+- split
+- playoffs
+- series_start_datetime
+- series_end_datetime
+- series_start_date
+- series_end_date
+- teamname
+- opponent
+- series_result
+- is_series_win
+- games_played
+- wins
+- losses
+- max_games
+- games_not_played
+- gameids
+
+## GNP Bonus Logic
+For winning teams:
+games_not_played = max_games - games_played
+
+Bonuses:
+- player_gnp_bonus_per_player = 20 * games_not_played
+- player_gnp_bonus_total_5 = player_gnp_bonus_per_player * 5
+- team_slot_gnp_bonus = 15 * games_not_played
+
+For a 2-0 BO3 win:
+- each player receives +20
+- five-player total receives +100
+- TEAM slot receives +15
+
+## DFS Fields Created
+- player_dk_fp_base
+- player_dk_fp_with_gnp
+- team_slot_dk_fp_base
+- team_slot_dk_fp_with_gnp
+
+## Team Environment Fields
+- avg_game_length_minutes
+- total_game_length_minutes
+- total_team_kills
+- total_team_deaths
+- total_player_kills
+- total_player_deaths
+- total_player_assists
+- total_player_cs
+- total_player_damage
+- total_player_dpm
+
+## Objective Fields
+- total_dragons
+- total_barons
+- total_towers
+- total_firstbloods
+
+## Early Game Fields
+- avg_gold_diff_10
+- avg_xp_diff_10
+- avg_cs_diff_10
+- avg_gold_diff_15
+- avg_xp_diff_15
+- avg_cs_diff_15
+
+## What Uses This Data
+Direct downstream script:
+- Script-build_lol_team_series_profiles
+
+Overall chain:
+dbo.lol_team_game_stats
+    -> Script-build_lol_team_series_results
+    -> dbo.lol_team_series_results
+    -> Script-build_lol_team_series_profiles
+    -> dbo.lol_team_series_profiles
+    -> Script-build_lol_top_lineups
+
+## Run Frequency
+Run after new completed game/team stats are loaded.
+
+This is a post-results refresh script.
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\build_lol_team_series_results.py
+
+## Refresh Behavior
+The script:
+1. Loads all team-game stats.
+2. Builds series results.
+3. Identifies years in the output.
+4. Deletes existing target rows for those years.
+5. Inserts rebuilt rows.
+
+## Important Risk Areas
+- Series grouping uses game_date.
+- Team names must be consistent.
+- BO1/BO3/BO5 max_games is inferred.
+- GNP bonus depends on correct max_games.
+- All source rows are processed.
+
+## Health Checks
+SELECT
+    [year],
+    league,
+    COUNT(*) AS team_series_rows,
+    COUNT(DISTINCT series_id) AS unique_series,
+    MIN(series_start_date) AS first_series_date,
+    MAX(series_start_date) AS last_series_date
+FROM dbo.lol_team_series_results
+GROUP BY [year], league
+ORDER BY [year] DESC, league;
+
+SELECT
+    league,
+    series_result,
+    COUNT(*) AS team_rows,
+    COUNT(DISTINCT series_id) AS series_count
+FROM dbo.lol_team_series_results
+GROUP BY league, series_result
+ORDER BY league, series_result;
+
+SELECT
+    series_id,
+    COUNT(DISTINCT teamname) AS team_count,
+    MIN(series_start_date) AS series_start_date,
+    MIN(league) AS league,
+    STRING_AGG(teamname, ' vs ') AS teams
+FROM dbo.lol_team_series_results
+GROUP BY series_id
+HAVING COUNT(DISTINCT teamname) <> 2
+ORDER BY series_start_date DESC;
+
+## Documentation Status
+Category: Historical results aggregation script
+Consumes: dbo.lol_team_game_stats
+Creates: dbo.lol_team_series_results
+Run frequency: After new completed game/team stats are loaded
+Post-results workflow: Yes
+Critical risk: series grouping, team-name consistency, GNP bonus logic

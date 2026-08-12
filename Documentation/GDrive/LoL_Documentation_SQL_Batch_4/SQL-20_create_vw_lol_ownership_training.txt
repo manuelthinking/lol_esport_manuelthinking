@@ -1,0 +1,328 @@
+# SQL-20_create_vw_lol_ownership_training
+
+## Source SQL File
+20_create_vw_lol_ownership_training.sql
+
+## Purpose
+Creates the LoL ownership training view.
+
+In plain English:
+This view combines DraftKings ownership results, DK slate salaries, player lane ratings, starter history, and Bayes backtest features into one row per slate/player/slot type. It is intended to support ownership modeling, player result analysis, and slate review.
+
+This version is slot-aware so FLEX ownership does not accidentally join to CPT salary rows.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_ownership_training
+
+This is a view.
+
+## Data It Consumes
+
+### Source Tables / Views
+- raw.dk_lol_player_ownership
+- dbo.dk_lol_slate_player
+- dbo.lol_player_lane_ratings
+- dbo.lol_manual_starters_history
+- dbo.lol_team_name_map
+- dbo.lol_bayes_prediction_backtest
+
+## Data It Creates
+Creates one row per:
+
+slate + player + ownership slot type
+
+## Grain
+One row per:
+- slate_date
+- slate_name
+- player
+- ownership_slot_type
+
+ownership_slot_type:
+- captain
+- flex
+- team
+
+## Main Logic
+
+### ownership CTE
+Aggregates raw player ownership by:
+- slate_date
+- slate_name
+- player_name
+- roster_position
+- ownership_slot_type
+
+Calculates:
+- ownership_rows
+- ownership_pct
+- actual_fp
+- sample_contest_id
+- contest_count
+
+### dk CTE
+Reads DK slate rows and classifies each row into:
+- captain
+- flex
+- team
+
+Also parses game_info into:
+- away_team_abbrev
+- home_team_abbrev
+
+### dk_with_opp CTE
+Creates opponent_abbrev from game_info and team_abbrev.
+
+### latest_rating CTE
+Ranks player lane ratings by:
+- player_name
+- position
+- season
+
+Order:
+- games DESC
+- rating_score DESC
+
+### joined CTE
+Joins ownership to DK slate rows on:
+- slate_date
+- slate_name
+- normalized player name
+- ownership_slot_type = dk_slot_type
+
+This is the key slot-aware fix.
+
+Then joins latest ratings for the matching player and season.
+
+### with_starters CTE
+Joins manual/actual starter history from dbo.lol_manual_starters_history.
+
+Adds:
+- starter_role
+- is_starter
+- historical starter games
+- actual_starter_flag
+
+### with_bayes CTE
+Uses team name map to join DK team abbreviations to Oracle team names, then joins Bayes backtest rows by:
+- slate_date = target_series_date
+- mapped team name
+- optional mapped opponent team name
+- optional league
+- prediction_source = historical_point_in_time_bayes
+
+## Output Columns
+Includes:
+
+### Slate / Player Identity
+- slate_date
+- slate_name
+- ownership_player_name
+- dk_player_name
+- dk_player_id
+- ownership_roster_position
+- ownership_slot_type
+- dk_position
+- dk_roster_position
+- dk_slot_type
+- team_abbrev
+- opponent_abbrev
+- rating_team_name
+- league
+- game_info
+- position
+- salary
+- avg_points_per_game
+
+### Ownership / Result
+- ownership_pct
+- actual_fp
+- ownership_rows
+- contest_count
+- sample_contest_id
+
+### Player Rating Features
+- games
+- win_rate
+- avg_dk
+- avg_dk_edge
+- avg_kills
+- avg_deaths
+- avg_assists
+- avg_kill_edge
+- avg_death_edge
+- avg_assist_edge
+- avg_gold_diff_10_edge
+- avg_xp_diff_10_edge
+- avg_cs_diff_10_edge
+- avg_dpm_edge
+- rating_score
+- dk_value
+- rating_value
+
+### Starter Features
+- starter_role
+- is_starter
+- actual_starter_flag
+- historical_starter_games_played
+- historical_starter_total_dk_points
+- historical_starter_avg_dk_points
+
+### Bayes Features
+- bayes_sample_type
+- bayes_similar_sample
+- bayes_win_pct
+- bayes_p_2_0
+- bayes_p_2_1
+- bayes_p_1_2
+- bayes_p_0_2
+- bayes_suggested_path
+- suggested_winner_teamname
+- suggested_match_score
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+- team/opponent lane strength and DK indexes
+
+### Derived Features
+- salary_tier
+- bayes_team_win_flag
+- bayes_sweep_flag
+
+## What Uses This Data
+Known downstream:
+- app_lol_command_center.py Ownership Review / Bayes Review
+- ownership model training
+- player result analysis
+- projection review
+- post-contest diagnostics
+
+Potential downstream:
+- lineup builder ownership/leverage inputs
+- historical player selection model
+- salary/ownership analysis
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically when source tables update.
+
+## Required Before Running
+Requires:
+- raw.dk_lol_player_ownership
+- dbo.dk_lol_slate_player
+- dbo.lol_player_lane_ratings
+- dbo.lol_manual_starters_history
+- dbo.lol_team_name_map
+- dbo.lol_bayes_prediction_backtest
+
+Important:
+This view expects lol_manual_starters_history to include columns added/used by the actual-starters backfill:
+- starter_role
+- games_played
+- total_dk_points
+- avg_dk_points
+
+If 09_create_lol_manual_starters_history.sql has not been fixed, this view may fail.
+
+## Health Checks
+
+Check row count by slate:
+SELECT
+    slate_date,
+    slate_name,
+    COUNT(*) AS rows_count,
+    COUNT(DISTINCT dk_player_name) AS players,
+    AVG(ownership_pct) AS avg_ownership,
+    MAX(ownership_pct) AS max_ownership
+FROM dbo.vw_lol_ownership_training
+GROUP BY slate_date, slate_name
+ORDER BY slate_date DESC, slate_name;
+
+Check slot types:
+SELECT
+    slate_date,
+    slate_name,
+    ownership_slot_type,
+    dk_slot_type,
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_ownership_training
+GROUP BY slate_date, slate_name, ownership_slot_type, dk_slot_type
+ORDER BY slate_date DESC, slate_name, ownership_slot_type;
+
+Check Bayes match coverage:
+SELECT
+    slate_date,
+    slate_name,
+    COUNT(*) AS rows_count,
+    SUM(CASE WHEN bayes_win_pct IS NULL THEN 1 ELSE 0 END) AS missing_bayes_rows,
+    SUM(CASE WHEN bayes_win_pct IS NOT NULL THEN 1 ELSE 0 END) AS matched_bayes_rows
+FROM dbo.vw_lol_ownership_training
+GROUP BY slate_date, slate_name
+ORDER BY slate_date DESC, slate_name;
+
+Check starter coverage:
+SELECT
+    slate_date,
+    slate_name,
+    COUNT(*) AS rows_count,
+    SUM(CASE WHEN actual_starter_flag = 1 THEN 1 ELSE 0 END) AS actual_starter_rows,
+    SUM(CASE WHEN actual_starter_flag = 0 THEN 1 ELSE 0 END) AS actual_sub_rows,
+    SUM(CASE WHEN actual_starter_flag IS NULL THEN 1 ELSE 0 END) AS missing_starter_rows
+FROM dbo.vw_lol_ownership_training
+GROUP BY slate_date, slate_name
+ORDER BY slate_date DESC, slate_name;
+
+## Important Risk Areas
+
+### Risk 1: Depends on fixed starter history schema
+This view references starter_role, games_played, total_dk_points, and avg_dk_points from lol_manual_starters_history. Those columns were not created in the uploaded 09 table script.
+
+### Risk 2: Bayes join depends on team mapping
+Bayes features only populate when dbo.lol_team_name_map maps DK abbreviations to Oracle team names correctly.
+
+### Risk 3: Bayes join uses slate_date = target_series_date
+If DK slate_date differs from actual match date, Bayes rows may not join.
+
+### Risk 4: Ratings join only by player name/season
+The latest_rating join does not include team or position from DK explicitly, so duplicate player names or role swaps can be risky.
+
+### Risk 5: TEAM slot rows do not have player lane ratings
+TEAM rows may naturally have NULL rating/player fields.
+
+### Risk 6: Ownership is averaged across contests
+If multiple contests are loaded, ownership_pct is the average across contest rows.
+
+## Recommended Future Enhancements
+- Fix lol_manual_starters_history schema first.
+- Add slate-to-actual-date mapping if DK date and match date differ.
+- Add a Bayes coverage diagnostic view.
+- Add team-name mapping health checks.
+- Add separate ownership training outputs for flex/captain/team.
+- Add contest-size or contest-type features if available.
+- Consider joining ratings by player + position + team where possible.
+
+## System Flow
+raw.dk_lol_player_ownership
+dbo.dk_lol_slate_player
+dbo.lol_player_lane_ratings
+dbo.lol_manual_starters_history
+dbo.lol_team_name_map
+dbo.lol_bayes_prediction_backtest
+    -> dbo.vw_lol_ownership_training
+    -> ownership model training / Command Center ownership review
+
+## Documentation Status
+Category: SQL ownership training view
+Consumes: raw ownership, DK slate, lane ratings, starter history, team map, Bayes backtest
+Creates: dbo.vw_lol_ownership_training
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: fixed starter history schema, team name map, Bayes backtest table
+Critical risk: Bayes matching gaps, slate_date mismatch, starter schema mismatch

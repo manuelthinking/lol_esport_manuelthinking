@@ -1,0 +1,248 @@
+# Script-ingest_oracle_elixir
+
+## Purpose
+Downloads or loads Oracle Elixir match data and stores LCK/LPL rows into the raw staging table.
+
+In plain English:
+It gets Oracle Elixir CSV data for configured years, filters to LCK and LPL, stores each row as JSON in staging, and refreshes a latest-starters helper table.
+
+This is the upstream ingestion step for historical LoL match data.
+
+## Data It Consumes
+
+### Remote CSV URLs
+The script has Google Drive URLs configured for:
+- 2024
+- 2025
+- 2026
+
+Current configured YEARS list:
+- 2026
+
+So in its current form, it only attempts to load 2026.
+
+### Manual Fallback Folder
+If download fails or the downloaded file is invalid, the script checks:
+
+C:\DailyDFS\LoL\data\manual_downloads
+
+It looks for valid CSV files containing the year in the filename.
+
+## Target Leagues
+Only these leagues are kept:
+- LCK
+- LPL
+
+## Data It Creates / Updates
+
+### Staging Table
+- raw.oracle_elixir_match_data_staging
+
+Inserted fields:
+- source_year
+- source_file
+- row_json
+
+Each Oracle row is stored as JSON.
+
+### Latest Starters Table
+- raw.oracle_elixir_latest_starters
+
+The script creates this table if needed and refreshes it.
+
+Fields:
+- league
+- teamname
+- position
+- playername
+- latest_game_date
+- latest_gameid
+- side
+- source_year
+- source_file
+- refreshed_at
+
+## Refresh Behavior
+
+### Staging Refresh
+For each successfully loaded year:
+1. Load and validate CSV.
+2. Filter to LCK/LPL.
+3. Delete existing staging rows for that source_year.
+4. Insert new rows for that source_year.
+
+Important:
+The script only deletes staging rows after it successfully loads a valid dataframe.
+
+### Latest Starters Refresh
+If any year is loaded, it combines loaded rows and refreshes:
+raw.oracle_elixir_latest_starters
+
+It truncates the latest starters table, then inserts one latest player per:
+- league
+- teamname
+- position
+
+## Main Functions
+- download_year
+- find_manual_file
+- load_csv
+- delete_year_from_staging
+- insert_df
+- ensure_latest_starters_table
+- refresh_latest_starters
+
+## Data Cleaning
+Column names are normalized:
+- lowercase
+- trim spaces
+- spaces become underscores
+- percent signs become pct
+
+The date column is converted to a date if present.
+
+Rows are converted to JSON strings before insert.
+
+## What Uses This Data
+Direct downstream script:
+- Script-build_player_games
+
+Other downstream use:
+- raw.oracle_elixir_latest_starters can help with starter checks
+- historical player/lane/team modeling
+- lane matchups
+- Team Overview
+- Bayes/lane power
+- historical projection features
+
+## Run Frequency
+Run after new Oracle Elixir data is available.
+
+This is the first step in the historical results refresh chain.
+
+Recommended order:
+1. Script-ingest_oracle_elixir
+2. Script-build_player_games
+3. Script-build_lane_matchups
+4. Script-build_lol_team_game_stats, if using the richer CSV flow
+5. Script-build_lol_team_series_results
+6. Script-build_lol_team_series_profiles
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\ingest_oracle_elixir.py
+
+## Required Before Running
+Make sure:
+- .env points to the correct DB_SERVER and DB_DATABASE
+- raw.oracle_elixir_match_data_staging exists
+- internet download works, or a valid manual CSV is in C:\DailyDFS\LoL\data\manual_downloads
+
+## Output Validation
+The script prints:
+- download attempts
+- fallback file usage if needed
+- rows loaded for each year
+- staging delete/insert counts
+- latest starters refresh count
+- Done
+
+Good signs:
+- LCK/LPL rows loaded is greater than 0
+- existing staging rows for the year are deleted
+- rows are inserted into raw.oracle_elixir_match_data_staging
+- latest starters rows are refreshed
+
+## SQL Health Checks
+
+Check staging rows:
+SELECT
+    source_year,
+    source_file,
+    COUNT(*) AS staging_rows
+FROM raw.oracle_elixir_match_data_staging
+GROUP BY source_year, source_file
+ORDER BY source_year DESC, source_file;
+
+Check latest starter rows:
+SELECT
+    league,
+    COUNT(*) AS latest_starter_rows,
+    COUNT(DISTINCT teamname) AS teams
+FROM raw.oracle_elixir_latest_starters
+GROUP BY league
+ORDER BY league;
+
+Preview latest starters:
+SELECT TOP 100
+    league,
+    teamname,
+    position,
+    playername,
+    latest_game_date,
+    latest_gameid,
+    side,
+    source_year,
+    source_file,
+    refreshed_at
+FROM raw.oracle_elixir_latest_starters
+ORDER BY latest_game_date DESC, league, teamname, position;
+
+Check staging has player rows:
+SELECT TOP 20
+    source_year,
+    source_file,
+    LEFT(row_json, 300) AS row_preview
+FROM raw.oracle_elixir_match_data_staging
+ORDER BY source_year DESC;
+
+## Important Risk Areas
+
+### Risk 1: Current YEARS only includes 2026
+The script has URLs for 2024, 2025, and 2026, but currently only loads:
+YEARS = [2026]
+
+If you want a full historical refresh, this list must be changed.
+
+### Risk 2: Google Drive download can fail
+The script has manual fallback logic. If download fails, place a valid CSV in:
+C:\DailyDFS\LoL\data\manual_downloads
+
+### Risk 3: Staging row_json is flexible but less queryable
+Rows are stored as JSON in staging. This is good for flexible raw storage, but downstream scripts must parse row_json correctly.
+
+### Risk 4: Latest starters only uses loaded years from the current run
+If only 2026 is loaded, latest starters are based only on 2026 rows.
+
+### Risk 5: Only LCK/LPL are retained
+This is intentional for your current DFS focus, but other leagues will be excluded.
+
+## Recommended Future Enhancements
+- Add command-line option for --years 2024 2025 2026.
+- Add --manual-file option to force a specific local Oracle CSV.
+- Add file-level ingest log.
+- Add row counts by league/split after load.
+- Add staging table creation if missing.
+- Add validation for required downstream columns.
+
+## System Flow
+Oracle Elixir Google Drive CSV or manual CSV
+    -> Script-ingest_oracle_elixir
+    -> raw.oracle_elixir_match_data_staging
+    -> raw.oracle_elixir_latest_starters
+    -> Script-build_player_games
+    -> dbo.fact_lol_player_game
+    -> Script-build_lane_matchups
+    -> dbo.fact_lol_lane_matchup
+
+## Documentation Status
+Category: Oracle Elixir raw ingest script
+Consumes: Google Drive Oracle CSV or manual local CSV
+Creates/Inserts: raw.oracle_elixir_match_data_staging
+Creates/Refreshes: raw.oracle_elixir_latest_starters
+Run frequency: After new Oracle Elixir data is available
+Daily pre-lock required: Conditional, only if using latest completed games
+Daily post-results required: Yes, if new games were added
+Downstream use: player-game facts, lane matchups, latest starters, Team Overview, lane power
+Critical dependency: valid Oracle Elixir CSV and staging table
+Critical risk: download failure, only 2026 loaded, latest starters based only on loaded data

@@ -1068,6 +1068,110 @@ def build_matchup_prediction_summary(predictions_df):
 
     return out.sort_values("slate_stack_score", ascending=False)
 
+@st.cache_data(ttl=300)
+def load_lane_power_signals(slate_date=None, slate_name=None, league=None):
+    conn = connect()
+
+    sql = """
+        SELECT
+            game_date,
+            slate_name,
+            game_info,
+            league,
+            team,
+            opponent,
+            team_full_name,
+            opponent_full_name,
+
+            bayes_win_pct,
+            lane_power_win_pct_modifier,
+            adjusted_win_pct,
+
+            top_lane_edge,
+            jng_lane_edge,
+            mid_lane_edge,
+            adc_lane_edge,
+            sup_lane_edge,
+            total_lane_edge,
+            carry_lane_edge,
+            main_carry_lane_edge,
+            secondary_lane_edge,
+
+            opponent_neutral_or_better_lanes,
+            opponent_neutral_or_better_carry_lanes,
+
+            total_lane_edge_tier,
+            carry_lane_edge_tier,
+
+            dfs_lane_power_signal,
+            dfs_lane_power_note
+        FROM dbo.vw_lol_slate_lane_power_signal_live_v1
+        WHERE 1 = 1
+    """
+
+    params = []
+
+    if slate_date is not None:
+        sql += " AND game_date = ?"
+        params.append(slate_date)
+
+    if slate_name is not None:
+        sql += " AND slate_name = ?"
+        params.append(slate_name)
+
+    if league is not None and str(league).strip().upper() != "ALL":
+        sql += " AND league = ?"
+        params.append(league)
+
+    sql += """
+        ORDER BY
+            game_date DESC,
+            slate_name,
+            league,
+            game_info,
+            team
+    """
+
+    try:
+        df = pd.read_sql(sql, conn, params=params)
+    finally:
+        conn.close()
+
+    return df
+
+
+def format_pct_display(x):
+    if pd.isna(x):
+        return ""
+    return f"{float(x) * 100:.1f}%"
+
+
+def format_modifier_display(x):
+    if pd.isna(x):
+        return ""
+    sign = "+" if float(x) > 0 else ""
+    return f"{sign}{float(x) * 100:.1f}%"
+
+
+def lane_signal_badge(signal):
+    signal = str(signal or "")
+
+    if "Major Carry Concern" in signal:
+        return "🔴 " + signal
+
+    if "Strong Carry Support" in signal:
+        return "🟢 " + signal
+
+    if "Toss-Up" in signal:
+        return "🟡 " + signal
+
+    if "Underdog" in signal:
+        return "🟠 " + signal
+
+    if "Thin" in signal:
+        return "⚪ " + signal
+
+    return "🔵 " + signal
 
 
 # =========================
@@ -1227,7 +1331,13 @@ def build_current_strength_matchups(player_df, team_strength_df, lane_strength_d
     return pd.DataFrame(rows)
 
 
-def build_bayes_strength_read(current_df, historical_df, priors_df, prior_weight=10):
+def build_bayes_strength_read(
+    current_df,
+    historical_df,
+    priors_df,
+    prior_weight=10,
+    sample_strategy="Auto Best Available",
+):
     if current_df.empty or historical_df.empty:
         return pd.DataFrame()
 
@@ -1272,7 +1382,17 @@ def build_bayes_strength_read(current_df, historical_df, priors_df, prior_weight
 
         strength_only = historical_df[base_filter].copy()
 
-        if len(strict) >= 5:
+        sample_options = {
+            "Strength + MID/BOT/SUP": strict,
+            "Strength + MID/BOT": mid_bot,
+            "Strength Only": strength_only,
+            "League Prior Only": pd.DataFrame(),
+        }
+
+        if sample_strategy in sample_options and sample_strategy != "Auto Best Available":
+            sample_df = sample_options[sample_strategy]
+            sample_type = sample_strategy
+        elif len(strict) >= 5:
             sample_df = strict
             sample_type = "Strength + MID/BOT/SUP"
         elif len(mid_bot) >= 5:
@@ -2128,6 +2248,128 @@ with tab1:
         )
 
 
+    st.divider()
+    st.subheader("Lane Power PIT Adjustment")
+
+    st.caption(
+        "Adds the clean point-in-time lane-power signal next to the current Bayes read. "
+        "This is a confidence modifier, not a replacement for the existing Bayes model."
+    )
+
+    lane_power_df = load_lane_power_signals(slate_date=selected_date,slate_name=selected_slate,)
+
+    if lane_power_df.empty:
+        st.info(
+            "No Lane Power PIT signals found for this slate date. "
+            "If this is an upcoming slate, the current snapshot may only contain completed historical series."
+        )
+    else:
+        display_df = lane_power_df.copy()
+
+        # Keep this section focused on the teams from the selected slate when names match.
+        slate_team_keys = {
+            norm_text(t)
+            for t in profile_team_names
+            if str(t).strip()
+        }
+
+        if slate_team_keys:
+            slate_filtered = display_df[
+                display_df["team"].apply(norm_text).isin(slate_team_keys)
+                | display_df["opponent"].apply(norm_text).isin(slate_team_keys)
+            ].copy()
+
+            if not slate_filtered.empty:
+                display_df = slate_filtered
+
+        display_df["Bayes Win %"] = display_df["bayes_win_pct"].apply(format_pct_display)
+        display_df["Lane Modifier"] = display_df["lane_power_win_pct_modifier"].apply(format_modifier_display)
+        display_df["Adjusted Win %"] = display_df["adjusted_win_pct"].apply(format_pct_display)
+        display_df["DFS Signal"] = display_df["dfs_lane_power_signal"].apply(lane_signal_badge)
+
+        show_cols = [
+            "game_date",
+            "league",
+            "team",
+            "opponent",
+            "Bayes Win %",
+            "Lane Modifier",
+            "Adjusted Win %",
+            "carry_lane_edge",
+            "carry_lane_edge_tier",
+            "opponent_neutral_or_better_carry_lanes",
+            "DFS Signal",
+            "dfs_lane_power_note",
+        ]
+
+        show_cols = [c for c in show_cols if c in display_df.columns]
+
+        st.dataframe(
+            display_df[show_cols].rename(
+                columns={
+                    "game_date": "Date",
+                    "league": "League",
+                    "team": "Team",
+                    "opponent": "Opponent",
+                    "carry_lane_edge": "Carry Lane Edge",
+                    "carry_lane_edge_tier": "Carry Lane Tier",
+                    "opponent_neutral_or_better_carry_lanes": "Opp Neutral+ Carry Lanes",
+                    "dfs_lane_power_note": "DFS Note",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("#### Priority Lane Power Flags")
+
+        flag_cols_raw = [
+            "bayes_overconfidence_warning_flag",
+            "favorite_stomp_support_flag",
+            "lane_power_breaks_bayes_tie_flag",
+            "bayes_possible_upset_signal_flag",
+        ]
+
+        for flag_col in flag_cols_raw:
+            if flag_col not in display_df.columns:
+                display_df[flag_col] = 0
+
+        flags_df = display_df[
+            (pd.to_numeric(display_df["bayes_overconfidence_warning_flag"], errors="coerce").fillna(0) == 1)
+            | (pd.to_numeric(display_df["favorite_stomp_support_flag"], errors="coerce").fillna(0) == 1)
+            | (pd.to_numeric(display_df["lane_power_breaks_bayes_tie_flag"], errors="coerce").fillna(0) == 1)
+            | (pd.to_numeric(display_df["bayes_possible_upset_signal_flag"], errors="coerce").fillna(0) == 1)
+        ].copy()
+
+        if flags_df.empty:
+            st.info("No major Lane Power flags for this slate/date.")
+        else:
+            flag_cols = [
+                "team",
+                "opponent",
+                "Bayes Win %",
+                "Adjusted Win %",
+                "carry_lane_edge",
+                "DFS Signal",
+                "dfs_lane_power_note",
+            ]
+
+            flag_cols = [c for c in flag_cols if c in flags_df.columns]
+
+            st.dataframe(
+                flags_df[flag_cols].rename(
+                    columns={
+                        "team": "Team",
+                        "opponent": "Opponent",
+                        "carry_lane_edge": "Carry Lane Edge",
+                        "dfs_lane_power_note": "DFS Note",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
 # =========================
 # Tab 2: Team Series Splits
 # =========================
@@ -2432,6 +2674,23 @@ with tab4:
             key="bayes_strength_prior_weight",
         )
 
+        sample_strategy = st.selectbox(
+            "Bayesian Sample Type",
+            options=[
+                "Auto Best Available",
+                "Strength + MID/BOT/SUP",
+                "Strength + MID/BOT",
+                "Strength Only",
+                "League Prior Only",
+            ],
+            index=0,
+            help=(
+                "Auto uses the most specific sample with at least 5 historical rows. "
+                "Manual choices force that exact sample type, even when the sample is thin."
+            ),
+            key="bayes_strength_sample_strategy",
+        )
+
         current_strength_df = build_current_strength_matchups(
             player_df=df,
             team_strength_df=team_strength_df,
@@ -2443,6 +2702,7 @@ with tab4:
             historical_df=historical_df,
             priors_df=priors_df,
             prior_weight=prior_weight,
+            sample_strategy=sample_strategy,
         )
 
         if bayes_read_df.empty:

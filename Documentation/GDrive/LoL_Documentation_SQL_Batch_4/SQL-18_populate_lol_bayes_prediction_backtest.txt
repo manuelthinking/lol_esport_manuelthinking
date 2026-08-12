@@ -1,0 +1,307 @@
+# SQL-18_populate_lol_bayes_prediction_backtest
+
+## Source SQL File
+18_populate_lol_bayes_prediction_backtest.sql
+
+## Purpose
+Populates the Bayesian prediction backtest table from the point-in-time Bayes source view.
+
+In plain English:
+This script simulates what the Bayes model would have predicted before each historical series. It uses only prior examples, selects the best available similar sample, smooths results toward league priors, predicts the result path, and writes the result to dbo.lol_bayes_prediction_backtest.
+
+This is the core Bayes backtest population script.
+
+## SQL Object Updated
+Populates / updates:
+
+dbo.lol_bayes_prediction_backtest
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+## Data It Creates / Updates
+Uses MERGE into:
+
+dbo.lol_bayes_prediction_backtest
+
+It updates existing rows or inserts missing rows based on:
+- target_series_id
+- teamname
+- opponent_teamname
+- prediction_source = historical_point_in_time_bayes
+- prior_weight
+
+## Grain
+One row per:
+
+historical target series + team-side prediction
+
+Each target_series_id normally creates two rows:
+- Team A perspective
+- Team B perspective
+
+## Main Parameters
+The script declares:
+
+@prior_weight FLOAT = 10.0
+
+This is the smoothing weight used when blending similar-sample rates with league priors.
+
+## Main Filters
+The base rows are filtered to:
+
+- league IN ('LPL', 'LCK')
+- season = 2026
+- actual_series_result IN ('2-0', '2-1', '1-2', '0-2')
+
+Important:
+This script is hard-coded to season = 2026.
+
+## Key Fix In This Version
+The script creates a row_key:
+
+target_series_id | teamname | opponent_teamname
+
+This prevents the two team-side predictions for the same target_series_id from being averaged together.
+
+That matters because target_series_id has two rows:
+- Team A vs Team B
+- Team B vs Team A
+
+Grouping only by target_series_id would push Bayes win probabilities toward 50%.
+
+## Main Steps
+
+### 1. Base historical point-in-time rows
+Loads rows from dbo.vw_lol_bayes_strength_matchups_point_in_time into #base.
+
+Carries:
+- target series context
+- actual result
+- team strength bucket
+- lane matchup buckets
+- team/opponent lane indexes
+
+### 2. League priors before each target row
+For each target team-side row, calculates league priors using only earlier target_series_date rows.
+
+Outputs:
+- league_prior_sample
+- league_win_rate
+- league_p_2_0
+- league_p_2_1
+- league_p_1_2
+- league_p_0_2
+
+### 3. Strict sample
+Looks for prior rows matching:
+- league
+- season
+- earlier date
+- strength_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+
+Sample type:
+Strength + MID/BOT/SUP
+
+### 4. MID/BOT sample
+Looks for prior rows matching:
+- league
+- season
+- earlier date
+- strength_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+
+Sample type:
+Strength + MID/BOT
+
+### 5. Strength-only sample
+Looks for prior rows matching:
+- league
+- season
+- earlier date
+- strength_matchup_bucket
+
+Sample type:
+Strength Only
+
+### 6. Choose fallback sample
+Sample selection logic:
+- if strict sample >= 5, use Strength + MID/BOT/SUP
+- else if mid/bot sample >= 5, use Strength + MID/BOT
+- else if strength sample >= 5, use Strength Only
+- else use League Prior Only
+
+### 7. Smooth probabilities
+Smooths:
+- win probability
+- 2-0 probability
+- 2-1 probability
+- 1-2 probability
+- 0-2 probability
+
+Formula pattern:
+(sample count + league prior * prior weight)
+/
+(sample size + prior weight)
+
+### 8. Build output rows
+Creates:
+- bayes_win_pct
+- bayes_p_2_0
+- bayes_p_2_1
+- bayes_p_1_2
+- bayes_p_0_2
+
+Path probabilities are normalized so the four path probabilities sum to 100%.
+
+### 9. Suggested path
+Selects the highest probability path:
+- 2-0
+- 2-1
+- 1-2
+- 0-2
+
+### 10. Winner / score / accuracy
+Derives:
+- suggested_winner_teamname
+- suggested_match_score
+- winner_correct
+- score_correct
+- path_correct
+
+### 11. Merge into table
+Updates or inserts dbo.lol_bayes_prediction_backtest.
+
+## Output Fields Populated
+- league
+- season
+- target_series_date
+- teamname
+- opponent_teamname
+- actual result fields
+- team/lane matchup fields
+- sample_type
+- similar_sample
+- bayes_win_pct
+- bayes path probabilities
+- suggested_path
+- suggested_winner_teamname
+- suggested_match_score
+- winner_correct
+- score_correct
+- path_correct
+- dfs_note
+- prediction_source
+- prior_weight
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_bayes_prediction_backtest_match_level
+- dbo.vw_lol_ownership_training
+- app_lol_team_overview.py
+- app_lol_command_center.py
+
+## Run Frequency
+Run after the point-in-time source views are current.
+
+This is a model/backtest refresh step, not a pre-lock slate step.
+
+Run it after:
+1. Oracle/player/team results refresh.
+2. Team series results refresh.
+3. Point-in-time Bayes views are valid.
+4. You want updated backtest accuracy.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_prediction_backtest
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+## Health Checks
+
+Check row count after run:
+SELECT
+    COUNT(*) AS backtest_rows,
+    MIN(target_series_date) AS first_date,
+    MAX(target_series_date) AS last_date
+FROM dbo.lol_bayes_prediction_backtest
+WHERE prediction_source = 'historical_point_in_time_bayes';
+
+Check sample type distribution:
+SELECT
+    league,
+    season,
+    sample_type,
+    COUNT(*) AS rows_count,
+    AVG(CAST(winner_correct AS FLOAT)) AS winner_accuracy,
+    AVG(CAST(score_correct AS FLOAT)) AS score_accuracy,
+    AVG(CAST(path_correct AS FLOAT)) AS path_accuracy,
+    AVG(similar_sample) AS avg_similar_sample
+FROM dbo.lol_bayes_prediction_backtest
+WHERE prediction_source = 'historical_point_in_time_bayes'
+GROUP BY league, season, sample_type
+ORDER BY league, sample_type;
+
+Check path distribution:
+SELECT
+    league,
+    suggested_path,
+    COUNT(*) AS rows_count,
+    AVG(CAST(winner_correct AS FLOAT)) AS winner_accuracy,
+    AVG(CAST(score_correct AS FLOAT)) AS score_accuracy
+FROM dbo.lol_bayes_prediction_backtest
+WHERE prediction_source = 'historical_point_in_time_bayes'
+GROUP BY league, suggested_path
+ORDER BY league, suggested_path;
+
+## Important Risk Areas
+
+### Risk 1: Hard-coded season = 2026
+This must be updated or parameterized for future seasons.
+
+### Risk 2: Depends on PIT views
+If the point-in-time views are stale, wrong, or hard-coded, this table inherits those issues.
+
+### Risk 3: Uses date-only prior cutoff
+The source PIT views and this script use target_series_date. Same-day prior series are generally excluded.
+
+### Risk 4: League prior only early in season
+Early-season rows will lean heavily on league priors. That is expected, but accuracy summaries should separate sample_type.
+
+### Risk 5: Prediction is team-side
+The table stores two rows per match. Use the match-level view for one-row-per-match summaries.
+
+### Risk 6: Highest path wins
+The script simply chooses the max path probability. It does not yet apply the more cautious 2-0 vs 2-1 decision rules used in the Streamlit scenario logic.
+
+## Recommended Future Enhancements
+- Add season parameter or dynamic current season.
+- Add prior_weight test runs, such as 6, 10, 15, 20.
+- Add model_version.
+- Add run_id / batch_id.
+- Add cautious path decision logic, especially for 2-0 vs 2-1.
+- Build a stored procedure wrapper.
+- Add output summary by sample type and league after run.
+
+## System Flow
+dbo.vw_lol_bayes_strength_matchups_point_in_time
+    -> 18_populate_lol_bayes_prediction_backtest.sql
+    -> dbo.lol_bayes_prediction_backtest
+    -> dbo.vw_lol_bayes_prediction_backtest_match_level
+    -> Bayes model review / confidence calibration
+
+## Documentation Status
+Category: SQL backtest population script
+Consumes: dbo.vw_lol_bayes_strength_matchups_point_in_time
+Updates: dbo.lol_bayes_prediction_backtest
+Run frequency: After historical result/PIT view refresh
+Daily pre-lock required: No
+Daily post-results required: Conditional, if new historical results were added
+Critical dependency: PIT Bayes source view and backtest table
+Critical risk: hard-coded 2026, date-only prior cutoff, max-probability path logic

@@ -1,0 +1,210 @@
+# SQL-09_create_lol_manual_starters_history
+
+## Source SQL File
+09_create_lol_manual_starters_history.sql
+
+## Purpose
+Creates a manual starters history table.
+
+In plain English:
+This table is intended to preserve the starters that were used for each slate so your lineup-building decisions can be audited later.
+
+The daily workflow can still use:
+C:\DailyDFS\LoL\data\manual_starters.csv
+
+But this table gives you a historical database record by slate.
+
+## SQL Object Created
+Creates:
+
+dbo.lol_manual_starters_history
+
+This is a physical table.
+
+## Data It Consumes
+This SQL file does not consume source data.
+
+It only creates:
+- table
+- unique index
+- lookup index
+
+Another process is needed to insert manual starter snapshots.
+
+## Data It Creates / Updates
+
+### Creates Table
+dbo.lol_manual_starters_history
+
+Only if it does not already exist.
+
+### Creates Unique Index
+ux_lol_manual_starters_history_slate_player
+
+### Creates Lookup Index
+ix_lol_manual_starters_history_slate
+
+## Grain
+One row per:
+
+slate_date + slate_name + teamname + position + playername
+
+## Main Columns
+- starter_history_id
+- slate_date
+- slate_name
+- teamname
+- position
+- playername
+- is_starter
+- source_file
+- source_type
+- loaded_at
+- updated_at
+
+## Indexes
+
+### Unique Index
+Prevents duplicate starter rows for the same slate/team/position/player.
+
+Columns:
+- slate_date
+- slate_name
+- teamname
+- position
+- playername
+
+### Lookup Index
+Supports loading starters by slate.
+
+Columns:
+- slate_date
+- slate_name
+- teamname
+- position
+
+## What Uses This Data
+Intended downstream use:
+- historical starter review
+- lineup backtesting
+- starter validation
+- Command Center health checks
+- determining whether lineup builder used correct starters
+- comparing manual starters against actual starters after games
+
+Related file:
+- 10_backfill_actual_starters_history.sql
+
+Important:
+The current table definition does not include all columns that 10_backfill_actual_starters_history.sql expects.
+
+## Run Frequency
+Run once during setup or when changing the table schema.
+
+Do not need to run daily.
+
+## Required Before Running
+No source table is required.
+
+## Health Checks
+
+Check table exists:
+SELECT
+    OBJECT_ID('dbo.lol_manual_starters_history', 'U') AS object_id;
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.lol_manual_starters_history;
+
+Check slate starter counts:
+SELECT
+    slate_date,
+    slate_name,
+    teamname,
+    COUNT(*) AS player_rows,
+    SUM(CASE WHEN is_starter = 1 THEN 1 ELSE 0 END) AS starter_rows
+FROM dbo.lol_manual_starters_history
+GROUP BY slate_date, slate_name, teamname
+ORDER BY slate_date DESC, slate_name, teamname;
+
+Check expected five starters per team:
+SELECT
+    slate_date,
+    slate_name,
+    teamname,
+    SUM(CASE WHEN is_starter = 1 THEN 1 ELSE 0 END) AS starter_rows
+FROM dbo.lol_manual_starters_history
+GROUP BY slate_date, slate_name, teamname
+HAVING SUM(CASE WHEN is_starter = 1 THEN 1 ELSE 0 END) <> 5
+ORDER BY slate_date DESC, slate_name, teamname;
+
+## Important Risk Areas
+
+### Risk 1: Insert process not included
+This file creates the table but does not save manual_starters.csv into the table.
+
+A separate script or job is needed.
+
+### Risk 2: Schema mismatch with file 10
+10_backfill_actual_starters_history.sql expects these columns:
+- starter_role
+- games_played
+- total_dk_points
+- avg_dk_points
+- actual_game_date
+- actual_league
+- actual_series_ids
+
+But this create-table file does not create them.
+
+That means file 10 can fail on a fresh database unless the table was manually altered elsewhere.
+
+### Risk 3: source_type default is manual_csv
+This is good for manual snapshots, but actual-games backfill uses source_type = actual_games.
+
+### Risk 4: Does not store slate file identity unless source_file is populated
+If the save process does not fill source_file, it is harder to audit which CSV was used.
+
+## Recommended Fix
+Update this table creation file to include the actual-games columns needed by 10_backfill_actual_starters_history.sql:
+
+ALTER TABLE dbo.lol_manual_starters_history ADD
+    starter_role VARCHAR(50) NULL,
+    games_played INT NULL,
+    total_dk_points FLOAT NULL,
+    avg_dk_points FLOAT NULL,
+    actual_game_date DATE NULL,
+    actual_league VARCHAR(50) NULL,
+    actual_series_ids VARCHAR(MAX) NULL;
+
+Or better:
+Modify 09_create_lol_manual_starters_history.sql so a fresh database is created with the complete schema.
+
+## Recommended Future Enhancements
+- Add a script to save manual_starters.csv into this table before lock.
+- Add slate-specific starter snapshot job in engine.jobs.
+- Add Command Center validation page based on this table.
+- Add actual-vs-manual starter comparison view.
+- Add source_file and loaded_at audit in the save process.
+
+## System Flow
+manual_starters.csv
+    -> starter snapshot save script needed
+    -> dbo.lol_manual_starters_history
+    -> starter audit / lineup backtesting
+
+actual game records
+    -> 10_backfill_actual_starters_history.sql
+    -> dbo.lol_manual_starters_history
+    -> actual starter/sub history
+
+## Documentation Status
+Category: SQL table creation
+Consumes: No data directly
+Creates: dbo.lol_manual_starters_history
+Run frequency: Setup/change only
+Daily pre-lock required: No, but a separate save process should run pre-lock
+Daily post-results required: No, but actual-games backfill can update it
+Critical dependency: future snapshot/backfill processes
+Critical risk: schema mismatch with 10_backfill_actual_starters_history.sql

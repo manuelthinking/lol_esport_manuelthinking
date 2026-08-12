@@ -1,0 +1,280 @@
+# SQL-17_create_lol_bayes_prediction_backtest
+
+## Source SQL File
+17_create_lol_bayes_prediction_backtest.sql
+
+## Purpose
+Creates the physical table used to store historical Bayesian prediction backtest rows.
+
+In plain English:
+This table stores what the Bayes model would have predicted for each historical team-side series row using point-in-time data. It is designed to let you evaluate whether the Bayes model predicted the winner, score type, and exact team path correctly.
+
+This is part of the historical model-validation layer.
+
+## SQL Object Created
+Creates:
+
+dbo.lol_bayes_prediction_backtest
+
+This is a physical table.
+
+## Data It Consumes
+This SQL file does not consume source data directly.
+
+It only:
+1. Creates the backtest table if it does not exist.
+2. Creates indexes if they do not exist.
+
+The actual rows are populated by:
+
+18_populate_lol_bayes_prediction_backtest.sql
+
+## Data It Creates / Updates
+
+### Creates Table
+dbo.lol_bayes_prediction_backtest
+
+Only if the table does not already exist.
+
+### Creates Indexes
+- ux_lol_bayes_prediction_backtest_series_team
+- ix_lol_bayes_prediction_backtest_date
+- ix_lol_bayes_prediction_backtest_accuracy
+
+## Grain
+One row per:
+
+historical target series + team perspective + prediction source + prior weight
+
+A single series should normally have two rows:
+- Team A vs Team B
+- Team B vs Team A
+
+## Main Columns
+
+### Historical Target Series
+- backtest_id
+- target_series_id
+- league
+- season
+- target_series_date
+
+### Team Context
+- teamname
+- opponent_teamname
+
+### Actual Result From Team Perspective
+- actual_series_result
+- actual_won_series
+- actual_game_wins
+- actual_game_losses
+
+### Point-in-Time Team Strength Context
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+- team_strength_sample_label
+- opponent_strength_sample_label
+- team_prior_series_count
+- opponent_prior_series_count
+- team_smoothed_prior_series_win_rate
+- opponent_smoothed_prior_series_win_rate
+- smoothed_strength_gap
+
+### Point-in-Time Lane Context
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+- top_lane_matchup_bucket
+- jng_lane_matchup_bucket
+- team_mid_strength
+- opponent_mid_strength
+- team_bot_strength
+- opponent_bot_strength
+- team_sup_strength
+- opponent_sup_strength
+- team_mid_dk_index
+- opponent_mid_dk_index
+- team_bot_dk_index
+- opponent_bot_dk_index
+- team_sup_dk_index
+- opponent_sup_dk_index
+
+### Bayesian Sample Selection
+- sample_type
+- similar_sample
+
+### Bayesian Probabilities
+- bayes_win_pct
+- bayes_p_2_0
+- bayes_p_2_1
+- bayes_p_1_2
+- bayes_p_0_2
+
+### Suggested Prediction
+- suggested_path
+- suggested_winner_teamname
+- suggested_match_score
+
+### Accuracy Fields
+- winner_correct
+- score_correct
+- path_correct
+
+### Notes / Metadata
+- dfs_note
+- prediction_source
+- prior_weight
+- created_at
+- updated_at
+
+## Indexes
+
+### Unique Index
+ux_lol_bayes_prediction_backtest_series_team
+
+Columns:
+- target_series_id
+- teamname
+- opponent_teamname
+- prediction_source
+- prior_weight
+
+Purpose:
+Prevents duplicate team-side backtest rows when the population script is rerun.
+
+### Date Lookup Index
+ix_lol_bayes_prediction_backtest_date
+
+Columns:
+- target_series_date
+- league
+- season
+
+Purpose:
+Supports historical review by date and league.
+
+### Accuracy Index
+ix_lol_bayes_prediction_backtest_accuracy
+
+Columns:
+- league
+- season
+- sample_type
+- winner_correct
+- score_correct
+- suggested_path
+
+Purpose:
+Supports backtest accuracy dashboards and summaries.
+
+## What Uses This Data
+Direct downstream:
+- 19_create_vw_lol_bayes_prediction_backtest_match_level.sql
+- app_lol_team_overview.py Bayes review / confidence logic
+- app_lol_command_center.py Bayes review
+- vw_lol_ownership_training Bayes join
+
+Related upstream:
+- 18_populate_lol_bayes_prediction_backtest.sql
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+## Run Frequency
+Run once during setup or when changing the table schema/indexes.
+
+Do not run daily unless the schema changes.
+
+The daily/refresh process is the population script, not this table creation file.
+
+## Required Before Running
+No source data required for table creation.
+
+## Required After Running
+Run:
+
+18_populate_lol_bayes_prediction_backtest.sql
+
+to populate the table.
+
+## Health Checks
+
+Check table exists:
+SELECT
+    OBJECT_ID('dbo.lol_bayes_prediction_backtest', 'U') AS object_id;
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.lol_bayes_prediction_backtest;
+
+Check rows by league/season/source:
+SELECT
+    league,
+    season,
+    prediction_source,
+    prior_weight,
+    COUNT(*) AS rows_count,
+    COUNT(DISTINCT target_series_id) AS series_count,
+    MIN(target_series_date) AS first_date,
+    MAX(target_series_date) AS last_date
+FROM dbo.lol_bayes_prediction_backtest
+GROUP BY league, season, prediction_source, prior_weight
+ORDER BY season DESC, league, prediction_source;
+
+Check duplicate team-side rows:
+SELECT
+    target_series_id,
+    teamname,
+    opponent_teamname,
+    prediction_source,
+    prior_weight,
+    COUNT(*) AS rows_count
+FROM dbo.lol_bayes_prediction_backtest
+GROUP BY
+    target_series_id,
+    teamname,
+    opponent_teamname,
+    prediction_source,
+    prior_weight
+HAVING COUNT(*) > 1;
+
+## Important Risk Areas
+
+### Risk 1: Table creation only
+This file does not populate the table.
+
+### Risk 2: Schema must match population script
+If 18_populate_lol_bayes_prediction_backtest.sql outputs fields not present here, the MERGE will fail. This batch appears aligned, but keep them together.
+
+### Risk 3: Team-side grain can be misunderstood
+This table is not one row per match. It is one row per team-side prediction. Use the match-level view for match-level summaries.
+
+### Risk 4: Prior weight included in unique key
+This allows multiple backtests with different prior weights. That is useful, but downstream queries should filter prior_weight or group by it.
+
+### Risk 5: Existing table is not dropped
+If the table already exists with an older schema, this file will not alter it. It only creates the table if missing.
+
+## Recommended Future Enhancements
+- Add schema migration checks for existing older versions.
+- Add model_version column separate from prediction_source.
+- Add run_id or etl_batch_id for population runs.
+- Add comments describing valid sample_type values.
+- Add stored procedure wrapper for table creation + populate.
+
+## System Flow
+dbo.vw_lol_bayes_strength_matchups_point_in_time
+    -> 18_populate_lol_bayes_prediction_backtest.sql
+    -> dbo.lol_bayes_prediction_backtest
+    -> dbo.vw_lol_bayes_prediction_backtest_match_level
+    -> Bayes accuracy review / confidence calibration
+
+## Documentation Status
+Category: SQL table creation
+Consumes: No data directly
+Creates: dbo.lol_bayes_prediction_backtest
+Run frequency: Setup/change only
+Daily pre-lock required: No
+Daily post-results required: No, but population should run after source refreshes
+Critical dependency: 18_populate_lol_bayes_prediction_backtest.sql
+Critical risk: existing stale schema, team-side grain confusion

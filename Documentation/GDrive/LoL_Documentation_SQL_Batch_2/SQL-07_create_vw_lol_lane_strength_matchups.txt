@@ -1,0 +1,292 @@
+# SQL-07_create_vw_lol_lane_strength_matchups
+
+## Source SQL File
+07_create_vw_lol_lane_strength_matchups.sql
+
+## Purpose
+Creates a historical lane-strength matchup view.
+
+In plain English:
+This view takes each historical team-series row and attaches lane strength buckets for both the team and its opponent. It then creates lane matchup labels such as strong_vs_weak for each role.
+
+This is one of the bridge views between historical results and Bayesian/lane-power matchup modeling.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_lane_strength_matchups
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_team_series_results
+
+### Source View
+- dbo.vw_lol_lane_strength_bucket
+
+## Data It Creates
+Creates a view with one row per:
+
+team per historical series
+
+## Grain
+one row per team per historical series
+
+Key identifiers:
+- series_id
+- teamname
+- opponent_teamname
+
+## Main Filters
+The base CTE filters to:
+
+- league IN ('LPL', 'LCK')
+- year = 2026
+- series_result IN ('2-0', '2-1', '1-2', '0-2')
+- teamname IS NOT NULL
+- opponent IS NOT NULL
+
+Important:
+This view is hard-coded to 2026.
+
+## Main Logic
+
+### base CTE
+Reads historical team series rows from dbo.lol_team_series_results.
+
+Carries:
+- series ID
+- league
+- season
+- series date
+- team / opponent
+- series result
+- win/loss
+- games played
+- DFS fantasy totals
+- kills/deaths
+- game length
+
+### team_lane_pivot CTE
+Pivots dbo.vw_lol_lane_strength_bucket from one row per team/position into one row per team.
+
+Creates team lane strength columns:
+- team_top_strength
+- team_jng_strength
+- team_mid_strength
+- team_bot_strength
+- team_sup_strength
+
+Creates lane DK index columns:
+- team_top_dk_index
+- team_jng_dk_index
+- team_mid_dk_index
+- team_bot_dk_index
+- team_sup_dk_index
+
+Creates sample-size columns:
+- team_top_games
+- team_jng_games
+- team_mid_games
+- team_bot_games
+- team_sup_games
+
+### with_lanes CTE
+Joins the historical team row to:
+1. its own team lane pivot
+2. the opponent team lane pivot
+
+Matching uses:
+- league
+- season
+- normalized team name
+
+### Final SELECT
+Outputs both team and opponent lane strength buckets and creates matchup labels:
+
+- top_lane_matchup_bucket
+- jng_lane_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+
+Example:
+strong_vs_weak
+
+## Output Columns
+- series_id
+- league
+- season
+- series_date
+- teamname
+- opponent_teamname
+- series_result
+- won_series
+- games_played
+- wins
+- losses
+- team_top_strength
+- team_jng_strength
+- team_mid_strength
+- team_bot_strength
+- team_sup_strength
+- opp_top_strength
+- opp_jng_strength
+- opp_mid_strength
+- opp_bot_strength
+- opp_sup_strength
+- top_lane_matchup_bucket
+- jng_lane_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+- team_top_dk_index
+- team_jng_dk_index
+- team_mid_dk_index
+- team_bot_dk_index
+- team_sup_dk_index
+- opp_top_dk_index
+- opp_jng_dk_index
+- opp_mid_dk_index
+- opp_bot_dk_index
+- opp_sup_dk_index
+- team_top_games
+- team_jng_games
+- team_mid_games
+- team_bot_games
+- team_sup_games
+- opp_top_games
+- opp_jng_games
+- opp_mid_games
+- opp_bot_games
+- opp_sup_games
+- player_dk_fp_base
+- player_dk_fp_with_gnp
+- team_slot_dk_fp_base
+- team_slot_dk_fp_with_gnp
+- total_team_kills
+- total_team_deaths
+- avg_game_length_minutes
+- total_game_length_minutes
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_bayes_strength_matchups
+
+Likely downstream:
+- app_lol_team_overview.py Bayesian Matchup Read
+- lane-power signal logic
+- scenario recommendations
+- ownership training features
+- Command Center Bayes/health review
+
+## Run Frequency
+Run when creating or updating the SQL view definition.
+
+Because this is a view, it updates automatically when the source tables/views change.
+
+You do not need to run this daily unless the SQL definition changes.
+
+## Required Before Running
+Requires:
+- dbo.lol_team_series_results
+- dbo.vw_lol_lane_strength_bucket
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_lane_strength_matchups;
+
+Check lane bucket distribution:
+SELECT
+    league,
+    season,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket,
+    COUNT(*) AS rows_count,
+    AVG(CAST(won_series AS FLOAT)) AS win_rate
+FROM dbo.vw_lol_lane_strength_matchups
+GROUP BY
+    league,
+    season,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket
+ORDER BY rows_count DESC;
+
+Check unknown lane strength:
+SELECT TOP 100
+    league,
+    season,
+    series_date,
+    teamname,
+    opponent_teamname,
+    team_top_strength,
+    team_jng_strength,
+    team_mid_strength,
+    team_bot_strength,
+    team_sup_strength,
+    opp_top_strength,
+    opp_jng_strength,
+    opp_mid_strength,
+    opp_bot_strength,
+    opp_sup_strength
+FROM dbo.vw_lol_lane_strength_matchups
+WHERE team_top_strength = 'unknown'
+   OR team_jng_strength = 'unknown'
+   OR team_mid_strength = 'unknown'
+   OR team_bot_strength = 'unknown'
+   OR team_sup_strength = 'unknown'
+   OR opp_top_strength = 'unknown'
+   OR opp_jng_strength = 'unknown'
+   OR opp_mid_strength = 'unknown'
+   OR opp_bot_strength = 'unknown'
+   OR opp_sup_strength = 'unknown'
+ORDER BY series_date DESC;
+
+## Important Risk Areas
+
+### Risk 1: Hard-coded year = 2026
+This view excludes other seasons and will need editing for future seasons.
+
+### Risk 2: Depends on lane strength bucket view
+If dbo.vw_lol_lane_strength_bucket is stale, broken, or also hard-coded to 2026, this view inherits that limitation.
+
+### Risk 3: Team-name matching
+The lane pivot joins by normalized team name. If team names differ between lol_team_series_results and lane strength buckets, strengths become unknown.
+
+### Risk 4: No split join
+Lane strength buckets are not split-specific in the output. If you later make lane strength split-specific, this view will need join changes.
+
+### Risk 5: Unknown fallback can hide missing data
+ISNULL converts missing strengths to unknown. That prevents nulls but can hide matching problems unless you monitor unknown rows.
+
+## Recommended Future Enhancements
+- Remove or parameterize hard-coded 2026.
+- Add point-in-time version to prevent future leakage in backtests.
+- Add unknown-rate monitoring to Command Center.
+- Add carry-lane rollup fields for MID/BOT/SUP.
+- Add league/season/date freshness diagnostics.
+- Add split if future lane-strength logic is split-specific.
+
+## System Flow
+dbo.fact_lol_player_game
+    -> dbo.vw_lol_lane_strength_bucket
+    -> dbo.vw_lol_lane_strength_matchups
+    -> dbo.vw_lol_bayes_strength_matchups
+    -> Team Overview / Bayes scenario logic
+
+## Documentation Status
+Category: SQL view
+Consumes: dbo.lol_team_series_results, dbo.vw_lol_lane_strength_bucket
+Creates: dbo.vw_lol_lane_strength_matchups
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, but source data must be current
+Daily post-results required: Source refresh only
+Critical dependency: lane strength bucket view and team series results
+Critical risk: hard-coded 2026, team-name matching, unknown lane strengths

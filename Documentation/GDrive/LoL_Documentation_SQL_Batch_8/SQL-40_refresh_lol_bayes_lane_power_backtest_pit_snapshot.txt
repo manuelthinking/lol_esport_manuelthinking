@@ -1,0 +1,253 @@
+# SQL-40_refresh_lol_bayes_lane_power_backtest_pit_snapshot
+
+## Source SQL File
+40_refresh_lol_bayes_lane_power_backtest_pit_snapshot.sql
+
+## Purpose
+Refreshes the PIT Bayes vs Lane Power backtest snapshot table.
+
+In plain English:
+This file rebuilds dbo.lol_bayes_lane_power_backtest_pit_snapshot from the PIT Bayes strength view and the materialized PIT lane-edge snapshot. It calculates lane summaries, Bayes favorite labels, Lane Power predictions, upset resistance, warning flags, and correctness flags.
+
+This is the operational refresh step for the PIT Bayes/Lane Power backtest snapshot.
+
+## SQL Object Updated
+Updates:
+
+dbo.lol_bayes_lane_power_backtest_pit_snapshot
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+### Source Table
+- dbo.lol_matchup_lane_edges_pit_snapshot
+
+## Data It Creates / Updates
+Runs:
+
+TRUNCATE TABLE dbo.lol_bayes_lane_power_backtest_pit_snapshot;
+
+Then inserts rebuilt rows.
+
+## Grain
+One row per:
+
+target_series_id + team + opponent
+
+Team-perspective grain.
+
+A normal target series should produce two rows.
+
+## Main Filters
+Bayes CTE filters:
+- league IN ('LPL', 'LCK')
+- season = 2026
+
+Important:
+This refresh is hard-coded to season = 2026.
+
+## Main Logic
+
+### bayes CTE
+Reads PIT Bayes strength fields:
+- target_series_id
+- league
+- season
+- target_series_date
+- teamname as team
+- opponent_teamname as opponent
+- actual result fields
+- team/opponent strength buckets
+- smoothed prior win rates
+- prior series counts
+
+Defines:
+- bayes_win_pct = team_smoothed_prior_series_win_rate
+- opponent_bayes_win_pct = opponent_smoothed_prior_series_win_rate
+
+### lane_summary CTE
+Summarizes lane-level PIT snapshot rows from dbo.lol_matchup_lane_edges_pit_snapshot by:
+- target_series_id
+- game_date
+- league
+- season
+- team
+- opponent
+
+Calculates:
+- lane_rows
+- rated_lane_rows
+- top/jng/mid/adc/sup lane edges
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- positive/negative carry edge lane counts
+- opponent neutral-or-better lane counts
+- min/avg prior games
+
+### joined CTE
+Left joins Bayes rows to lane summary by:
+- target_series_id
+- team
+- opponent
+
+### scored CTE
+Creates:
+- total_lane_edge_tier
+- carry_lane_edge_tier
+- bayes_predicted_win_flag
+- lane_power_predicted_win_flag
+- bayes_favorite_status
+- lane_favorite_status
+- upset_resistance_score
+
+### final_scored CTE
+Creates:
+- upset_resistance_tier
+- bayes_lane_alignment_label
+- bayes_overconfidence_warning_flag
+- bayes_possible_upset_signal_flag
+- lane_power_breaks_bayes_tie_flag
+- favorite_stomp_support_flag
+
+### Final INSERT
+Inserts all fields into the snapshot table and calculates:
+- bayes_winner_correct_flag
+- lane_power_winner_correct_flag
+
+## Prediction Logic
+
+### Bayes predicted win
+- bayes_win_pct >= 0.50 -> predicted win
+- bayes_win_pct < 0.50 -> predicted loss
+
+### Lane Power predicted win
+- rated_lane_rows < 3 -> no prediction
+- carry_lane_edge >= 5 -> predicted win
+- carry_lane_edge <= -5 -> predicted loss
+- between -5 and 5 -> no prediction
+
+## Alignment Labels
+Possible labels:
+- Thin PIT Rating
+- Bayes Favorite / Lane Stomp Support
+- Bayes Favorite / Lane Stomp Warning
+- Bayes Favorite / Carry Lanes Questionable
+- Bayes Underdog / Lane Power Live
+- Bayes Toss-Up / Lane Power Has Lean
+- Bayes and Lane Signal Aligned or Neutral
+
+## Warning Flags
+- bayes_overconfidence_warning_flag
+- bayes_possible_upset_signal_flag
+- lane_power_breaks_bayes_tie_flag
+- favorite_stomp_support_flag
+
+## What Uses This Data
+Downstream:
+- SQL-41 indexes the table
+- PIT backtest summaries / reporting
+- Command Center model review if connected
+
+## Run Frequency
+Run after:
+1. PIT Bayes views are current.
+2. PIT lane-edge snapshot has been refreshed with file 37.
+3. The PIT backtest snapshot table exists from file 39.
+
+This is a post-results/model-refresh step.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_lane_power_backtest_pit_snapshot
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+- dbo.lol_matchup_lane_edges_pit_snapshot
+
+## Health Checks
+
+Check row count after refresh:
+SELECT
+    COUNT(*) AS rows_count,
+    MIN(game_date) AS first_game_date,
+    MAX(game_date) AS last_game_date
+FROM dbo.lol_bayes_lane_power_backtest_pit_snapshot;
+
+Check accuracy:
+SELECT
+    league,
+    season,
+    COUNT(*) AS rows_count,
+    AVG(CAST(bayes_winner_correct_flag AS FLOAT)) AS bayes_winner_accuracy,
+    AVG(CAST(lane_power_winner_correct_flag AS FLOAT)) AS lane_power_winner_accuracy,
+    SUM(CASE WHEN rated_lane_rows < 3 OR rated_lane_rows IS NULL THEN 1 ELSE 0 END) AS thin_pit_rows
+FROM dbo.lol_bayes_lane_power_backtest_pit_snapshot
+GROUP BY league, season
+ORDER BY season DESC, league;
+
+Check lane summary coverage:
+SELECT
+    lane_rows,
+    rated_lane_rows,
+    COUNT(*) AS rows_count
+FROM dbo.lol_bayes_lane_power_backtest_pit_snapshot
+GROUP BY lane_rows, rated_lane_rows
+ORDER BY lane_rows, rated_lane_rows;
+
+Check warning labels:
+SELECT
+    bayes_lane_alignment_label,
+    COUNT(*) AS rows_count,
+    AVG(CAST(bayes_winner_correct_flag AS FLOAT)) AS bayes_accuracy,
+    AVG(CAST(lane_power_winner_correct_flag AS FLOAT)) AS lane_power_accuracy
+FROM dbo.lol_bayes_lane_power_backtest_pit_snapshot
+GROUP BY bayes_lane_alignment_label
+ORDER BY rows_count DESC;
+
+## Important Risk Areas
+
+### Risk 1: TRUNCATE before INSERT
+If the insert fails after truncate, the PIT backtest snapshot table will be empty.
+
+### Risk 2: Hard-coded 2026
+The bayes CTE filters to season = 2026.
+
+### Risk 3: Depends on lane-edge snapshot freshness
+This refresh does not read the live lane-edge PIT view. It reads dbo.lol_matchup_lane_edges_pit_snapshot. If file 37 was not run, this output is stale.
+
+### Risk 4: Bayes probability definition
+bayes_win_pct is team_smoothed_prior_series_win_rate from the PIT strength view, not the fuller Bayes path probability from the Bayes prediction backtest table.
+
+### Risk 5: Team-side grain
+Rows are team perspective, not one row per match.
+
+### Risk 6: No transaction wrapper
+The script does not wrap truncate/insert in a transaction.
+
+## Recommended Future Enhancements
+- Wrap refresh in transaction.
+- Add run_id/refreshed_at audit table.
+- Add season parameter.
+- Add explicit row count validation.
+- Add match-level summary view.
+- Consider reading from a refreshed match-level Bayes prediction backtest table if path probabilities are needed.
+- Add dependency check that lane-edge snapshot row count > 0 before truncate/insert.
+
+## System Flow
+dbo.vw_lol_bayes_strength_matchups_point_in_time
+dbo.lol_matchup_lane_edges_pit_snapshot
+    -> SQL-40 refreshes dbo.lol_bayes_lane_power_backtest_pit_snapshot
+    -> SQL-41 indexes table
+    -> model review summaries
+
+## Documentation Status
+Category: SQL PIT backtest snapshot refresh
+Consumes: PIT Bayes strength view, PIT lane-edge snapshot table
+Updates: dbo.lol_bayes_lane_power_backtest_pit_snapshot
+Run frequency: After PIT lane-edge snapshot refresh and historical data updates
+Daily pre-lock required: No
+Daily post-results required: Conditional, if historical data changed
+Critical dependency: file 37 must run first, table from file 39 must exist
+Critical risk: truncate-before-insert, stale lane-edge snapshot, hard-coded 2026, team-side grain

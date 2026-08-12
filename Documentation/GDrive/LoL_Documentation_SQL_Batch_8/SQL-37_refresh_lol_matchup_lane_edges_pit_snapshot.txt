@@ -1,0 +1,134 @@
+# SQL-37_refresh_lol_matchup_lane_edges_pit_snapshot
+
+## Source SQL File
+37_refresh_lol_matchup_lane_edges_pit_snapshot.sql
+
+## Purpose
+Refreshes the physical PIT matchup lane edges snapshot table.
+
+In plain English:
+This file empties dbo.lol_matchup_lane_edges_pit_snapshot and reloads it from dbo.vw_lol_matchup_lane_edges_pit_v1.
+
+This materializes the PIT lane-edge data so later backtest snapshot refreshes can run faster and more consistently.
+
+## SQL Object Updated
+Updates:
+
+dbo.lol_matchup_lane_edges_pit_snapshot
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_matchup_lane_edges_pit_v1
+
+## Data It Creates / Updates
+Runs:
+
+TRUNCATE TABLE dbo.lol_matchup_lane_edges_pit_snapshot;
+
+INSERT INTO dbo.lol_matchup_lane_edges_pit_snapshot
+SELECT *
+FROM dbo.vw_lol_matchup_lane_edges_pit_v1;
+
+## Grain
+Same as source view:
+
+target_series_id + team + opponent + lane
+
+Expected normal shape:
+- 10 rows per target series
+- 5 lanes per team perspective
+
+## Refresh Behavior
+Full truncate-and-reload.
+
+## What Uses This Data
+Direct downstream:
+- 40_refresh_lol_bayes_lane_power_backtest_pit_snapshot.sql
+
+The refresh script uses this snapshot to create the lane_summary CTE.
+
+## Run Frequency
+Run after upstream PIT lane-edge view data changes and before refreshing the PIT Bayes/Lane Power backtest snapshot.
+
+Recommended order:
+1. Refresh underlying historical data.
+2. Confirm PIT lane-edge view exists.
+3. Run SQL-36 if snapshot table does not exist.
+4. Run SQL-37 to refresh lane-edge snapshot.
+5. Run SQL-40 to refresh PIT Bayes/Lane Power backtest snapshot.
+6. Run SQL-41 indexes if needed.
+
+## Required Before Running
+Requires:
+- dbo.lol_matchup_lane_edges_pit_snapshot
+- dbo.vw_lol_matchup_lane_edges_pit_v1
+
+## Health Checks
+
+Check row count after refresh:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.lol_matchup_lane_edges_pit_snapshot;
+
+Check expected 10 rows per target series:
+SELECT
+    target_series_id,
+    COUNT(*) AS lane_rows,
+    COUNT(DISTINCT team) AS teams,
+    COUNT(DISTINCT lane) AS lanes
+FROM dbo.lol_matchup_lane_edges_pit_snapshot
+GROUP BY target_series_id
+HAVING COUNT(*) <> 10
+ORDER BY lane_rows;
+
+Check rated lane rows:
+SELECT
+    league,
+    season,
+    COUNT(*) AS lane_rows,
+    SUM(CASE WHEN lane_power_edge IS NOT NULL THEN 1 ELSE 0 END) AS rated_lane_rows,
+    MIN(game_date) AS first_game_date,
+    MAX(game_date) AS last_game_date
+FROM dbo.lol_matchup_lane_edges_pit_snapshot
+GROUP BY league, season
+ORDER BY season DESC, league;
+
+## Important Risk Areas
+
+### Risk 1: TRUNCATE before INSERT
+If the insert fails, the snapshot table is left empty.
+
+### Risk 2: SELECT * dependency
+The source view and table schemas must match exactly. If the source view changed after table creation, refresh can fail.
+
+### Risk 3: No explicit transaction
+The script does not use a transaction around truncate/insert.
+
+### Risk 4: Snapshot can become stale
+Downstream backtest snapshot depends on this table. If this file is not run after upstream changes, later backtest output will be stale.
+
+### Risk 5: Missing index file
+There is no file 38 in this batch. If this snapshot table grows large, a missing index file may matter.
+
+## Recommended Future Enhancements
+- Wrap truncate/insert in a transaction.
+- Replace SELECT * with an explicit column list.
+- Add post-refresh row-count validation.
+- Add indexes on target_series_id, team, opponent, lane.
+- Add refreshed_at metadata or audit table.
+
+## System Flow
+dbo.vw_lol_matchup_lane_edges_pit_v1
+    -> SQL-37 refreshes dbo.lol_matchup_lane_edges_pit_snapshot
+    -> SQL-40 refreshes dbo.lol_bayes_lane_power_backtest_pit_snapshot
+
+## Documentation Status
+Category: SQL snapshot refresh
+Consumes: dbo.vw_lol_matchup_lane_edges_pit_v1
+Updates: dbo.lol_matchup_lane_edges_pit_snapshot
+Run frequency: After PIT lane-edge upstream changes
+Daily pre-lock required: No
+Daily post-results required: Conditional, if historical data changed
+Critical dependency: lane-edge PIT snapshot table and source view
+Critical risk: truncate-before-insert, SELECT * schema drift, stale snapshot

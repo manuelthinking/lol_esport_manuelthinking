@@ -1,0 +1,292 @@
+# SQL-31_create_vw_lol_player_lane_power_rating_pit_v1
+
+## Source SQL File
+31_create_vw_lol_player_lane_power_rating_pit_v1.sql
+
+## Purpose
+Creates a point-in-time player lane-power rating view.
+
+In plain English:
+For every historical target series date, this view recalculates player lane-power ratings using only games played before that target series date. This prevents future-data leakage when testing lane-power signals historically.
+
+This is the PIT version of the player lane-power rating layer.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_player_lane_power_rating_pit_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+Used only to get distinct target dates:
+- league
+- season
+- target_series_date
+
+### Source Table
+- dbo.fact_lol_player_game
+
+Used to gather prior player-game history before each target date.
+
+## Data It Creates
+Creates one row per:
+
+target_series_date + league + season + lane + team + player
+
+## Grain
+One row per player/team/lane as of a historical target date.
+
+This answers:
+"What was this player's lane-power rating before this series date?"
+
+## Main Filters
+
+### Target Dates
+From dbo.vw_lol_bayes_strength_matchups_point_in_time:
+
+- league IN ('LPL', 'LCK')
+- season = 2026
+
+### Prior Games
+From dbo.fact_lol_player_game:
+
+- f.league = target league
+- f.season = target season
+- f.game_date < target_series_date
+- f.league IN ('LPL', 'LCK')
+- f.season = 2026
+- team_name IS NOT NULL
+- player_name IS NOT NULL
+- position IS NOT NULL
+- position in top/jng/jun/jungle/mid/bot/adc/sup
+
+Important:
+This view is hard-coded to season = 2026.
+
+## Main Logic
+
+### target_dates CTE
+Gets unique historical target dates from the PIT Bayes view.
+
+### prior_games CTE
+Joins each target date to player games before that date.
+
+This is the key point-in-time logic:
+
+f.game_date < td.target_series_date
+
+### agg CTE
+Aggregates prior player games by:
+- league
+- season
+- target_series_date
+- lane
+- team
+- player_name
+- player_id
+
+Requires:
+- COUNT(*) >= 3
+
+### rank_base CTE
+Calculates percentile scores within each:
+- league
+- season
+- target_series_date
+- lane
+
+Percentile metrics:
+- dk_score
+- kill_score
+- assist_score
+- cs_score
+- dpm_score
+- damage_share_score
+- gold10_score
+- xp10_score
+- cs10_score
+- vision_score_rank
+- wards_placed_score
+- wards_killed_score
+- first_blood_score
+- win_rate_score
+- death_control_score
+
+### scored CTE
+Combines percentile metrics into lane_power_score with lane-specific weights.
+
+### ranked CTE
+Adds:
+- lane_power_rank
+- lane_player_pool_count
+
+Final SELECT adds:
+- lane_power_tier
+
+## Position Normalization
+- bot / adc -> ADC
+- jng / jun / jungle -> JNG
+- everything else -> UPPER(position)
+
+Expected lanes:
+- TOP
+- JNG
+- MID
+- ADC
+- SUP
+
+## Output Columns
+Carries all aggregate and scoring fields, including:
+
+- league
+- season
+- target_series_date
+- lane
+- team
+- player_name
+- player_id
+- prior_games_played
+- prior_win_rate
+- avg_dk_points
+- kills_per_game
+- deaths_per_game
+- assists_per_game
+- cs_per_min
+- dpm
+- avg_damage_share
+- avg_total_gold
+- avg_earned_gold
+- avg_gold_diff_10
+- avg_xp_diff_10
+- avg_cs_diff_10
+- avg_vision_score
+- wards_placed_per_game
+- wards_killed_per_game
+- first_blood_rate
+- kill_assist_per_game
+- kda_proxy
+- percentile scores
+- lane_power_score
+- lane_power_rank
+- lane_player_pool_count
+- lane_power_tier
+
+## Lane Power Tier Logic
+- lane_power_score >= 85 -> Elite
+- lane_power_score >= 70 -> Strong
+- lane_power_score >= 50 -> Neutral
+- lane_power_score >= 35 -> Weak
+- else -> Poor
+
+## What Uses This Data
+Likely direct downstream:
+- dbo.vw_lol_matchup_lane_edges_pit_v1
+
+That file is not included in this batch but is required by file 33.
+
+Later downstream:
+- dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+- dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+- dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1
+
+## Run Frequency
+Run when creating or changing the SQL view definition.
+
+Because this is a view, it updates automatically as source data changes.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+- dbo.fact_lol_player_game
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_player_lane_power_rating_pit_v1;
+
+Check rows by target date:
+SELECT
+    league,
+    season,
+    target_series_date,
+    COUNT(*) AS player_lane_rows,
+    COUNT(DISTINCT player_name) AS players
+FROM dbo.vw_lol_player_lane_power_rating_pit_v1
+GROUP BY league, season, target_series_date
+ORDER BY target_series_date DESC, league;
+
+Check tier distribution:
+SELECT
+    league,
+    lane,
+    lane_power_tier,
+    COUNT(*) AS rows_count,
+    AVG(lane_power_score) AS avg_lane_power_score,
+    AVG(prior_games_played) AS avg_prior_games
+FROM dbo.vw_lol_player_lane_power_rating_pit_v1
+GROUP BY league, lane, lane_power_tier
+ORDER BY league, lane, lane_power_tier;
+
+Check thin history:
+SELECT TOP 100
+    league,
+    season,
+    target_series_date,
+    lane,
+    team,
+    player_name,
+    prior_games_played,
+    lane_power_score,
+    lane_power_tier
+FROM dbo.vw_lol_player_lane_power_rating_pit_v1
+ORDER BY prior_games_played ASC, target_series_date DESC;
+
+## Important Risk Areas
+
+### Risk 1: Hard-coded 2026
+This view is point-in-time but still hard-coded to 2026.
+
+### Risk 2: Uses date-only cutoff
+Same-day prior games are excluded because the condition is game_date < target_series_date.
+
+### Risk 3: Requires at least 3 prior games
+Players with fewer than 3 prior games are excluded. This can create missing lane ratings for subs, new players, or early-season matches.
+
+### Risk 4: Depends on fact_lol_player_game DK points quality
+If dk_points in fact_lol_player_game is placeholder or incomplete, lane-power scoring inherits that issue.
+
+### Risk 5: Percentile scores recalculate by target date
+This is correct for PIT backtesting but more expensive than a static view.
+
+## Recommended Future Enhancements
+- Remove/parameterize hard-coded 2026.
+- Add datetime-based cutoff if reliable match times exist.
+- Add fallback ratings for players with fewer than 3 games.
+- Confirm full DK scoring in fact_lol_player_game.
+- Add model_version to output if not already added elsewhere.
+- Create a live-slate equivalent for upcoming slates.
+
+## System Flow
+dbo.vw_lol_bayes_strength_matchups_point_in_time
+dbo.fact_lol_player_game
+    -> dbo.vw_lol_player_lane_power_rating_pit_v1
+    -> dbo.vw_lol_matchup_lane_edges_pit_v1
+    -> dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+    -> dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+
+## Documentation Status
+Category: SQL point-in-time lane-power rating view
+Consumes: PIT Bayes target dates, dbo.fact_lol_player_game
+Creates: dbo.vw_lol_player_lane_power_rating_pit_v1
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: fact player games and PIT Bayes target dates
+Critical risk: hard-coded 2026, missing file 32 downstream, 3-game minimum, DK scoring quality

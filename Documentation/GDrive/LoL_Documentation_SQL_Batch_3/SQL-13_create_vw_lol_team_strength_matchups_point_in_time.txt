@@ -1,0 +1,191 @@
+# SQL-13_create_vw_lol_team_strength_matchups_point_in_time
+
+## Source SQL File
+13_create_vw_lol_team_strength_matchups_point_in_time.sql
+
+## Purpose
+Creates point-in-time team strength matchup buckets.
+
+In plain English:
+For each historical target series, this view compares the team's point-in-time strength bucket against the opponent's point-in-time strength bucket.
+
+This creates matchup buckets like:
+- strong_vs_weak
+- neutral_vs_strong
+- weak_vs_neutral
+
+Because both team and opponent strength are calculated only from prior data, this avoids future-data leakage.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_team_strength_matchups_point_in_time
+
+This is a view.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_team_strength_bucket_point_in_time
+
+## Data It Creates
+Creates one row per:
+
+team per historical target series
+
+## Grain
+One row per:
+
+- target_series_id
+- teamname
+
+## Main Logic
+
+### base CTE
+Reads the point-in-time team strength rows.
+
+### with_opponent CTE
+Self-joins the base rows to attach the opponent's point-in-time strength row.
+
+Join conditions:
+- same target_series_id
+- same league
+- same season
+- team opponent matches opponent teamname
+- team teamname matches opponent opponent_teamname
+
+### Final SELECT
+Outputs:
+- team strength bucket
+- opponent strength bucket
+- strength_matchup_bucket
+- prior record fields for both teams
+- smoothed strength gap
+
+## Output Columns
+- target_series_id
+- league
+- season
+- target_series_date
+- teamname
+- opponent_teamname
+- actual_series_result
+- actual_won_series
+- actual_game_wins
+- actual_game_losses
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+- team_strength_sample_label
+- opponent_strength_sample_label
+- team_prior_series_count
+- opponent_prior_series_count
+- team_prior_series_wins
+- team_prior_series_losses
+- opponent_prior_series_wins
+- opponent_prior_series_losses
+- team_prior_game_wins
+- team_prior_game_losses
+- opponent_prior_game_wins
+- opponent_prior_game_losses
+- team_raw_prior_series_win_rate
+- opponent_raw_prior_series_win_rate
+- team_smoothed_prior_series_win_rate
+- opponent_smoothed_prior_series_win_rate
+- smoothed_strength_gap
+- league_prior_rows
+- league_prior_win_rate
+- prior_weight
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+Likely downstream:
+- Bayes backtest
+- Bayes prediction confidence calibration
+- point-in-time scenario recommendations
+
+## Run Frequency
+Run when creating or updating the view definition.
+
+Because this is a view, it updates automatically when upstream data changes.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_team_strength_bucket_point_in_time
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_team_strength_matchups_point_in_time;
+
+Check bucket performance:
+SELECT
+    league,
+    season,
+    strength_matchup_bucket,
+    COUNT(*) AS sample_rows,
+    AVG(CAST(actual_won_series AS FLOAT)) AS actual_win_rate,
+    AVG(smoothed_strength_gap) AS avg_smoothed_strength_gap
+FROM dbo.vw_lol_team_strength_matchups_point_in_time
+GROUP BY league, season, strength_matchup_bucket
+ORDER BY sample_rows DESC;
+
+Check unknown opponent strength:
+SELECT TOP 100
+    league,
+    season,
+    target_series_date,
+    teamname,
+    opponent_teamname,
+    team_strength_bucket,
+    opponent_strength_bucket,
+    strength_matchup_bucket,
+    team_prior_series_count,
+    opponent_prior_series_count
+FROM dbo.vw_lol_team_strength_matchups_point_in_time
+WHERE team_strength_bucket = 'unknown'
+   OR opponent_strength_bucket = 'unknown'
+ORDER BY target_series_date DESC;
+
+## Important Risk Areas
+
+### Risk 1: Depends on point-in-time team bucket view
+Any season/date limitations from view 12 carry into this view.
+
+### Risk 2: Self-join matching
+Opponent attachment depends on teamname/opponent_teamname matching both directions.
+
+### Risk 3: Unknown opponent fallback
+The final view uses unknown fallback if opponent row does not join.
+
+### Risk 4: Same target series produces two rows
+This is intended: one row from each team's perspective. Downstream logic must account for that.
+
+### Risk 5: League prior shared from team row
+league_prior fields come from the team-side row. This is fine because both teams are same league/date, but worth knowing.
+
+## Recommended Future Enhancements
+- Add validation for exactly two rows per target_series_id.
+- Add unknown-rate health check.
+- Add point-in-time season control.
+- Add matchup-level single-row view if later needed for display.
+
+## System Flow
+dbo.lol_team_series_results
+    -> dbo.vw_lol_team_strength_bucket_point_in_time
+    -> dbo.vw_lol_team_strength_matchups_point_in_time
+    -> dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+## Documentation Status
+Category: SQL point-in-time view
+Consumes: dbo.vw_lol_team_strength_bucket_point_in_time
+Creates: dbo.vw_lol_team_strength_matchups_point_in_time
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: point-in-time team strength bucket view
+Critical risk: opponent self-join matching, inherited hard-coded season

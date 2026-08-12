@@ -1,0 +1,286 @@
+# SQL-06_create_vw_lol_lane_strength_bucket
+
+## Source SQL File
+06_create_vw_lol_lane_strength_bucket.sql
+
+## Purpose
+Creates a view that labels each team's lane/position as strong, neutral, or weak.
+
+In plain English:
+This view compares each team’s average DK points by lane against the league-position average. It then assigns each lane a strength bucket.
+
+This is used for lane-power and Bayesian matchup logic.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_lane_strength_bucket
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.fact_lol_player_game
+
+## Data It Creates
+Creates a view with one row per:
+
+- league
+- season
+- teamname
+- position
+
+## Grain
+league + season + teamname + position
+
+## Main Filters
+The view only includes:
+
+- league IN ('LPL', 'LCK')
+- season = 2026
+- team_name IS NOT NULL
+- player_name IS NOT NULL
+- position in top/jng/jungle/mid/bot/adc/sup/support
+
+Important:
+This view is hard-coded to 2026.
+
+## Position Normalization
+The view normalizes position values:
+
+- bot / adc -> BOT
+- jng / jungle -> JNG
+- mid -> MID
+- top -> TOP
+- sup / support -> SUP
+
+## Main Logic
+
+### Base CTE
+Reads player-game rows from dbo.fact_lol_player_game and standardizes positions.
+
+Fields:
+- league
+- season
+- teamname
+- position
+- game_id
+- player_name
+- kills
+- deaths
+- assists
+- dk_points
+- dpm
+- damage_share
+- vision_score
+- gold_diff_10
+- xp_diff_10
+- cs_diff_10
+
+### league_position_avg CTE
+Calculates league-position averages.
+
+Grouped by:
+- league
+- season
+- position
+
+Metrics:
+- league_position_games
+- league_position_avg_dk
+- league_position_avg_kills
+- league_position_avg_deaths
+- league_position_avg_assists
+- league_position_avg_dpm
+- league_position_avg_vision
+
+### team_lane CTE
+Calculates team-lane averages.
+
+Grouped by:
+- league
+- season
+- teamname
+- position
+
+Metrics:
+- lane_games
+- lane_players
+- lane_avg_dk
+- lane_avg_kills
+- lane_avg_deaths
+- lane_avg_assists
+- lane_avg_dpm
+- lane_avg_damage_share
+- lane_avg_vision_score
+- lane_avg_gold_diff_10
+- lane_avg_xp_diff_10
+- lane_avg_cs_diff_10
+
+### joined CTE
+Joins team lane averages to league-position averages.
+
+Creates lane indexes:
+- lane_dk_index
+- lane_kill_index
+- lane_assist_index
+- lane_dpm_index
+- lane_vision_index
+
+## Output Columns
+- league
+- season
+- teamname
+- position
+- lane_games
+- lane_players
+- lane_avg_dk
+- league_position_avg_dk
+- lane_dk_index
+- lane_avg_kills
+- league_position_avg_kills
+- lane_kill_index
+- lane_avg_deaths
+- league_position_avg_deaths
+- lane_avg_assists
+- league_position_avg_assists
+- lane_assist_index
+- lane_avg_dpm
+- league_position_avg_dpm
+- lane_dpm_index
+- lane_avg_damage_share
+- lane_avg_vision_score
+- league_position_avg_vision
+- lane_vision_index
+- lane_avg_gold_diff_10
+- lane_avg_xp_diff_10
+- lane_avg_cs_diff_10
+- lane_strength_bucket
+- lane_strength_sample_label
+
+## Bucket Logic
+
+### lane_strength_bucket
+- lane_games < 5 -> neutral
+- lane_dk_index >= 1.10 -> strong
+- lane_dk_index <= 0.90 -> weak
+- everything else -> neutral
+
+### lane_strength_sample_label
+- lane_games < 5 -> low_sample
+- lane_games between 5 and 14 -> medium_sample
+- else -> solid_sample
+
+## What Uses This Data
+Known downstream usage:
+- app_lol_team_overview.py Bayesian Matchup Read
+- lane-power logic
+- Bayes strength/lane matchup views
+- scenario recommendations
+- potentially ownership training features
+
+Likely downstream views:
+- dbo.vw_lol_bayes_strength_matchups
+- dbo.vw_lol_slate_lane_power_signal_live_v1
+
+## Run Frequency
+Run when creating or updating the SQL view definition.
+
+Because this is a view, values update automatically when dbo.fact_lol_player_game changes.
+
+## Suggested Command / Execution
+Run in SQL Server Management Studio or your SQL runner connected to lol_esports.
+
+## Required Before Running
+Requires:
+- dbo.fact_lol_player_game
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_lane_strength_bucket;
+
+Check lane bucket distribution:
+SELECT
+    league,
+    season,
+    position,
+    lane_strength_bucket,
+    lane_strength_sample_label,
+    COUNT(*) AS team_lanes
+FROM dbo.vw_lol_lane_strength_bucket
+GROUP BY league, season, position, lane_strength_bucket, lane_strength_sample_label
+ORDER BY league, position, lane_strength_bucket;
+
+Check strongest lanes:
+SELECT TOP 100
+    league,
+    season,
+    teamname,
+    position,
+    lane_games,
+    lane_players,
+    lane_avg_dk,
+    league_position_avg_dk,
+    lane_dk_index,
+    lane_strength_bucket,
+    lane_strength_sample_label
+FROM dbo.vw_lol_lane_strength_bucket
+ORDER BY lane_dk_index DESC;
+
+Check missing/low samples:
+SELECT
+    league,
+    season,
+    teamname,
+    position,
+    lane_games,
+    lane_strength_bucket,
+    lane_strength_sample_label
+FROM dbo.vw_lol_lane_strength_bucket
+WHERE lane_games < 5
+ORDER BY league, teamname, position;
+
+## Important Risk Areas
+
+### Risk 1: Hard-coded season = 2026
+This view will need updating for future seasons or multi-season analysis.
+
+### Risk 2: Depends on fact_lol_player_game
+If player game data is stale or uses placeholder DK scoring, lane buckets may be misleading.
+
+### Risk 3: DK points drive lane strength
+This is intentional for DFS, but it may differ from pure real-life lane strength.
+
+### Risk 4: Small sample lanes forced neutral
+This avoids overreacting but can hide strong new roster changes.
+
+### Risk 5: Team name consistency
+Downstream joins depend on teamname matching other views and slate mapping.
+
+## Recommended Future Enhancements
+- Add season parameter or create current-season view.
+- Add point-in-time version to avoid future leakage in backtests.
+- Add weighted recent form version.
+- Consider combining DK index with gold/xp/cs/dpm indexes.
+- Add separate carry-lane strength rollup for MID/BOT/SUP.
+- Add date freshness checks.
+
+## System Flow
+dbo.fact_lol_player_game
+    -> dbo.vw_lol_lane_strength_bucket
+    -> Bayesian strength/lane matchup views
+    -> Lane Power / Team Overview / scenario recommendations
+
+## Documentation Status
+Category: SQL view
+Consumes: dbo.fact_lol_player_game
+Creates: dbo.vw_lol_lane_strength_bucket
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, but source data must be current
+Daily post-results required: Source refresh only
+Critical dependency: dbo.fact_lol_player_game
+Critical risk: hard-coded 2026, placeholder/player-game DK scoring, stale source data

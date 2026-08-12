@@ -1,0 +1,280 @@
+# SQL-14_create_vw_lol_lane_strength_bucket_point_in_time
+
+## Source SQL File
+14_create_vw_lol_lane_strength_bucket_point_in_time.sql
+
+## Purpose
+Creates point-in-time lane strength buckets.
+
+In plain English:
+For each historical target series, this view calculates each team's lane strength using only player-game data from before that series date. It compares the team's prior lane average DK to the league-position prior average DK.
+
+This prevents future-data leakage in lane strength backtesting.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_lane_strength_bucket_point_in_time
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_team_series_results
+- dbo.fact_lol_player_game
+
+## Data It Creates
+Creates one row per:
+
+target series + team + position
+
+## Grain
+One row per:
+
+- target_series_id
+- teamname
+- position
+
+Positions:
+- TOP
+- JNG
+- MID
+- BOT
+- SUP
+
+## Main Filters
+
+### Target Series
+- league IN ('LPL', 'LCK')
+- year = 2026
+- series_result IN ('2-0', '2-1', '1-2', '0-2')
+- teamname IS NOT NULL
+- opponent IS NOT NULL
+- series_start_date IS NOT NULL
+
+### Player Games
+- league IN ('LPL', 'LCK')
+- season = 2026
+- game_date IS NOT NULL
+- team_name IS NOT NULL
+- player_name IS NOT NULL
+- position IS NOT NULL
+
+Important:
+This view is hard-coded to 2026.
+
+## Main Logic
+
+### target_series CTE
+Identifies each historical target series/team row.
+
+### player_games_clean CTE
+Standardizes player game rows and normalizes positions.
+
+Position normalization:
+- top -> TOP
+- jng/jungle -> JNG
+- mid -> MID
+- bot/adc -> BOT
+- sup/support -> SUP
+
+### team_lane_before_series CTE
+For each target series/team/position, collects prior player games for that team before the target series date.
+
+Join condition:
+- player game date < target_series_date
+
+Calculates:
+- lane_games
+- lane_players_used
+- first_prior_game_date
+- last_prior_game_date
+- lane_avg_dk
+- lane_avg_kills
+- lane_avg_deaths
+- lane_avg_assists
+- lane_avg_dpm
+- lane_avg_damage_share
+- lane_avg_vision_score
+- lane_avg_gold_diff_10
+- lane_avg_xp_diff_10
+- lane_avg_cs_diff_10
+
+### league_position_before_series CTE
+Calculates league-position averages before the target series date.
+
+This gives the comparison baseline as of that date.
+
+### joined CTE
+Compares team lane averages against league-position averages.
+
+Creates indexes:
+- lane_dk_index
+- lane_kill_index
+- lane_assist_index
+- lane_dpm_index
+- lane_vision_index
+
+## Output Columns
+- target_series_id
+- league
+- season
+- target_series_date
+- teamname
+- opponent_teamname
+- actual_series_result
+- actual_won_series
+- actual_game_wins
+- actual_game_losses
+- position
+- lane_games
+- lane_players_used
+- first_prior_game_date
+- last_prior_game_date
+- lane_avg_dk
+- league_position_avg_dk
+- lane_dk_index
+- lane_avg_kills
+- league_position_avg_kills
+- lane_kill_index
+- lane_avg_deaths
+- league_position_avg_deaths
+- lane_avg_assists
+- league_position_avg_assists
+- lane_assist_index
+- lane_avg_dpm
+- league_position_avg_dpm
+- lane_dpm_index
+- lane_avg_damage_share
+- league_position_avg_damage_share
+- lane_avg_vision_score
+- league_position_avg_vision_score
+- lane_vision_index
+- lane_avg_gold_diff_10
+- lane_avg_xp_diff_10
+- lane_avg_cs_diff_10
+- league_position_games
+- lane_strength_bucket_point_in_time
+- lane_strength_sample_label_point_in_time
+
+## Bucket Logic
+
+### lane_strength_bucket_point_in_time
+- position IS NULL -> unknown
+- lane_games < 5 -> neutral
+- lane_dk_index >= 1.05 -> strong
+- lane_dk_index <= 0.95 -> weak
+- else -> neutral
+
+### lane_strength_sample_label_point_in_time
+- position IS NULL -> no_prior_data
+- lane_games < 5 -> low_sample
+- lane_games between 5 and 9 -> medium_sample
+- else -> solid_sample
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_lane_strength_matchups_point_in_time
+
+Later downstream:
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+- point-in-time lane-power/Bayes backtesting
+- scenario confidence evaluation
+
+## Run Frequency
+Run when creating or updating the view definition.
+
+Because this is a view, it updates automatically when source data changes.
+
+## Required Before Running
+Requires:
+- dbo.lol_team_series_results
+- dbo.fact_lol_player_game
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_lane_strength_bucket_point_in_time;
+
+Check row count by position:
+SELECT
+    league,
+    season,
+    position,
+    COUNT(*) AS rows_count,
+    AVG(lane_dk_index) AS avg_lane_dk_index
+FROM dbo.vw_lol_lane_strength_bucket_point_in_time
+GROUP BY league, season, position
+ORDER BY league, position;
+
+Check sample distribution:
+SELECT
+    league,
+    season,
+    position,
+    lane_strength_bucket_point_in_time,
+    lane_strength_sample_label_point_in_time,
+    COUNT(*) AS rows_count,
+    AVG(CAST(actual_won_series AS FLOAT)) AS actual_win_rate
+FROM dbo.vw_lol_lane_strength_bucket_point_in_time
+GROUP BY
+    league,
+    season,
+    position,
+    lane_strength_bucket_point_in_time,
+    lane_strength_sample_label_point_in_time
+ORDER BY league, position, lane_strength_bucket_point_in_time;
+
+Check target series missing lanes:
+SELECT
+    target_series_id,
+    teamname,
+    COUNT(DISTINCT position) AS position_count
+FROM dbo.vw_lol_lane_strength_bucket_point_in_time
+GROUP BY target_series_id, teamname
+HAVING COUNT(DISTINCT position) <> 5
+ORDER BY position_count;
+
+## Important Risk Areas
+
+### Risk 1: Hard-coded 2026
+This view is point-in-time but only for 2026.
+
+### Risk 2: Uses game_date < target_series_date
+Same-date previous games are not counted. This is conservative but may exclude earlier same-day matches.
+
+### Risk 3: Depends on fact_lol_player_game DK points
+If fact_lol_player_game uses placeholder DK scoring, lane_dk_index may not reflect full DraftKings scoring.
+
+### Risk 4: Team-name matching
+Team lane history is matched by team_name to teamname.
+
+### Risk 5: Lane strength uses DK index only for bucket
+Other indexes are available, but strength bucket is based on DK index.
+
+## Recommended Future Enhancements
+- Remove/parameterize hard-coded 2026.
+- Consider datetime-based prior cutoff if available.
+- Upgrade fact_lol_player_game DK scoring or use a fuller scoring source.
+- Add recent-form weighting.
+- Build a current-slate point-in-time version for pre-lock use.
+
+## System Flow
+dbo.lol_team_series_results
+dbo.fact_lol_player_game
+    -> dbo.vw_lol_lane_strength_bucket_point_in_time
+    -> dbo.vw_lol_lane_strength_matchups_point_in_time
+    -> dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+## Documentation Status
+Category: SQL point-in-time view
+Consumes: dbo.lol_team_series_results, dbo.fact_lol_player_game
+Creates: dbo.vw_lol_lane_strength_bucket_point_in_time
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: team series results and player-game facts
+Critical risk: hard-coded 2026, same-date exclusion, DK scoring source

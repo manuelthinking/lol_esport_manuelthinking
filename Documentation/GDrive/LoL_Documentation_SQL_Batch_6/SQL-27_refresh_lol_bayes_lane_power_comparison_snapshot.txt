@@ -1,0 +1,134 @@
+# SQL-27_refresh_lol_bayes_lane_power_comparison_snapshot
+
+## Source SQL File
+27_refresh_lol_bayes_lane_power_comparison_snapshot.sql
+
+## Purpose
+Refreshes the physical Bayes vs Lane Power comparison snapshot table.
+
+In plain English:
+This file empties dbo.lol_bayes_lane_power_comparison_snapshot and reloads it from dbo.vw_lol_bayes_lane_power_comparison_v1.
+
+This turns the live comparison view into a stable table for faster backtesting summaries.
+
+## SQL Object Updated
+Updates:
+
+dbo.lol_bayes_lane_power_comparison_snapshot
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_bayes_lane_power_comparison_v1
+
+## Data It Creates / Updates
+
+### Refreshes Table
+Runs:
+
+TRUNCATE TABLE dbo.lol_bayes_lane_power_comparison_snapshot;
+
+INSERT INTO dbo.lol_bayes_lane_power_comparison_snapshot
+SELECT *
+FROM dbo.vw_lol_bayes_lane_power_comparison_v1;
+
+## Grain
+Same as the source view:
+
+one row per game/team/opponent perspective
+
+## Refresh Behavior
+This is a full truncate-and-reload.
+
+That means:
+- existing snapshot rows are deleted
+- the table is reloaded from the current view results
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_bayes_lane_power_backtest_summary_v1
+- dbo.vw_lol_lane_power_warning_backtest_v1
+
+Also supported by indexes from:
+- 28_index_lol_bayes_lane_power_comparison_snapshot.sql
+
+## Run Frequency
+Run whenever upstream comparison data has changed and you want the backtest summaries refreshed.
+
+Run after:
+1. historical player/team result data has been refreshed
+2. Bayes PIT views are updated
+3. lane-power views are updated
+4. dbo.vw_lol_bayes_lane_power_comparison_v1 is returning current rows
+
+This is a post-results / model-refresh step, not a pre-lock lineup step.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_lane_power_comparison_snapshot
+- dbo.vw_lol_bayes_lane_power_comparison_v1
+
+The snapshot table must already exist from file 26.
+
+## Health Checks
+
+Check row count after refresh:
+SELECT
+    COUNT(*) AS rows_count,
+    MIN(game_date) AS first_game_date,
+    MAX(game_date) AS last_game_date
+FROM dbo.lol_bayes_lane_power_comparison_snapshot;
+
+Check rows by league:
+SELECT
+    league,
+    COUNT(*) AS rows_count,
+    COUNT(DISTINCT game_id) AS games,
+    MIN(game_date) AS first_game_date,
+    MAX(game_date) AS last_game_date
+FROM dbo.lol_bayes_lane_power_comparison_snapshot
+GROUP BY league
+ORDER BY league;
+
+Check missing Bayes joins:
+SELECT
+    COUNT(*) AS rows_count,
+    SUM(CASE WHEN target_series_id IS NULL THEN 1 ELSE 0 END) AS missing_bayes_rows,
+    SUM(CASE WHEN target_series_id IS NOT NULL THEN 1 ELSE 0 END) AS matched_bayes_rows
+FROM dbo.lol_bayes_lane_power_comparison_snapshot;
+
+## Important Risk Areas
+
+### Risk 1: TRUNCATE before INSERT
+If the insert fails after the truncate, the snapshot table will be empty.
+
+### Risk 2: SELECT * dependency
+The snapshot table column order must match the view column order. If the view changed but the snapshot table was not recreated, the insert can fail or misalign.
+
+### Risk 3: No transaction wrapper
+The script does not wrap truncate/insert in an explicit transaction.
+
+### Risk 4: Snapshot can get stale
+The backtest summary views read the snapshot table, not the live comparison view. If this refresh is not run, summaries are stale.
+
+## Recommended Future Enhancements
+- Wrap TRUNCATE/INSERT in a transaction.
+- Add row count validation after insert.
+- Add snapshot_refreshed_at field or separate audit table.
+- Replace SELECT * with explicit column list.
+- Build a stored procedure for create + refresh + index + validation.
+
+## System Flow
+dbo.vw_lol_bayes_lane_power_comparison_v1
+    -> SQL-27 refreshes dbo.lol_bayes_lane_power_comparison_snapshot
+    -> SQL-29/30 summary views
+
+## Documentation Status
+Category: SQL snapshot refresh
+Consumes: dbo.vw_lol_bayes_lane_power_comparison_v1
+Updates: dbo.lol_bayes_lane_power_comparison_snapshot
+Run frequency: After upstream Bayes/lane-power refresh
+Daily pre-lock required: No
+Daily post-results required: Conditional, if new results were added
+Critical dependency: snapshot table and comparison view
+Critical risk: truncate-before-insert, SELECT * schema drift, stale snapshot if not refreshed

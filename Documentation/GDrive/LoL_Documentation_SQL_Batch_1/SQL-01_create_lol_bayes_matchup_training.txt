@@ -1,0 +1,330 @@
+# SQL-01_create_lol_bayes_matchup_training
+
+## Source SQL File
+01_create_lol_bayes_matchup_training.sql
+
+## Purpose
+Creates the physical SQL table used to store Bayesian matchup training rows.
+
+In plain English:
+This table is designed to hold one row per team per historical series, including lane-level team stats, opponent lane stats, team-minus-opponent edges, and bucket fields that can later be used for Bayesian grouping.
+
+This table is meant to support:
+- prior win rate
+- similar matchup win rate
+- Bayesian-smoothed win probability
+- future result path probabilities such as 2-0, 2-1, 1-2, 0-2
+
+## SQL Object Created
+Creates:
+
+dbo.lol_bayes_matchup_training
+
+This is a physical table, not a view.
+
+## Data It Consumes
+This SQL file does not consume data directly.
+
+It only:
+1. Drops the table if it already exists.
+2. Creates the table.
+3. Creates indexes.
+
+A separate population script or SQL process is required to insert data into this table.
+
+## Data It Creates / Updates
+
+### Creates Table
+dbo.lol_bayes_matchup_training
+
+### Drops Existing Table
+If the table exists, it runs:
+
+DROP TABLE dbo.lol_bayes_matchup_training
+
+That means all existing training data is removed when this file is run.
+
+## Grain
+The intended grain is:
+
+one row per team per historical series
+
+Unique index:
+
+series_id + teamname
+
+So each historical series should have one row for each team.
+
+Example:
+- BLG vs TES series
+  - BLG row
+  - TES row
+
+## Main Columns
+
+### Series Identity
+- bayes_matchup_id
+- series_id
+- series_date
+- season
+- league
+
+### Team Side
+- teamname
+- opponent_teamname
+
+### Result From Team Perspective
+- series_result
+- won_series
+- games_played
+
+### Team Lane Stats
+- team_top_kills
+- team_jng_kills
+- team_mid_kills
+- team_bot_kills
+- team_sup_kills
+- team_top_assists
+- team_jng_assists
+- team_mid_assists
+- team_bot_assists
+- team_sup_assists
+- team_top_deaths
+- team_jng_deaths
+- team_mid_deaths
+- team_bot_deaths
+- team_sup_deaths
+- team_top_dk
+- team_jng_dk
+- team_mid_dk
+- team_bot_dk
+- team_sup_dk
+
+### Opponent Lane Stats
+- opp_top_kills
+- opp_jng_kills
+- opp_mid_kills
+- opp_bot_kills
+- opp_sup_kills
+- opp_top_assists
+- opp_jng_assists
+- opp_mid_assists
+- opp_bot_assists
+- opp_sup_assists
+- opp_top_deaths
+- opp_jng_deaths
+- opp_mid_deaths
+- opp_bot_deaths
+- opp_sup_deaths
+- opp_top_dk
+- opp_jng_dk
+- opp_mid_dk
+- opp_bot_dk
+- opp_sup_dk
+
+### Lane Edges
+These are intended to represent team minus opponent.
+
+- top_kill_edge
+- jng_kill_edge
+- mid_kill_edge
+- bot_kill_edge
+- sup_kill_edge
+- top_assist_edge
+- jng_assist_edge
+- mid_assist_edge
+- bot_assist_edge
+- sup_assist_edge
+- top_death_edge
+- jng_death_edge
+- mid_death_edge
+- bot_death_edge
+- sup_death_edge
+- top_dk_edge
+- jng_dk_edge
+- mid_dk_edge
+- bot_dk_edge
+- sup_dk_edge
+
+### Team-Level Summary Edges
+- team_kill_edge
+- team_assist_edge
+- team_death_edge
+- team_dk_edge
+
+### Optional Rating Fields
+- team_rating_score
+- opp_rating_score
+- team_rating_edge
+
+### Bucket Fields
+These are intended for easier Bayesian grouping.
+
+- top_kill_bucket
+- jng_kill_bucket
+- mid_kill_bucket
+- bot_kill_bucket
+- sup_assist_bucket
+- bot_dk_bucket
+- team_rating_bucket
+
+## Indexes Created
+
+### Primary Key
+PK_lol_bayes_matchup_training
+
+Column:
+- bayes_matchup_id
+
+### Unique Index
+UX_lol_bayes_matchup_training_series_team
+
+Columns:
+- series_id
+- teamname
+
+### Lookup Index
+IX_lol_bayes_matchup_training_league_team
+
+Columns:
+- league
+- teamname
+- series_date
+
+### Team/Opponent Index
+IX_lol_bayes_matchup_training_team_opp
+
+Columns:
+- teamname
+- opponent_teamname
+- series_date
+
+### Result Index
+IX_lol_bayes_matchup_training_result
+
+Columns:
+- league
+- series_result
+- won_series
+
+### Edge Bucket Index
+IX_lol_bayes_matchup_training_edges
+
+Columns:
+- league
+- top_kill_bucket
+- mid_kill_bucket
+- bot_kill_bucket
+- sup_assist_bucket
+- bot_dk_bucket
+
+## What Uses This Data
+This table is intended to be used by Bayesian matchup logic.
+
+Potential downstream usage:
+- Bayesian matchup read
+- team-vs-team historical comparison
+- similar matchup win probability
+- result path probability modeling
+- Team Overview Bayesian tab
+- lineup scenario recommendations
+
+However, in the current documented app files, the more active Bayes flow appears to use views such as:
+- dbo.vw_lol_bayes_matchup_training
+- dbo.vw_lol_bayes_strength_matchups
+- dbo.vw_lol_bayes_league_priors
+
+So this table may be an earlier or alternate Bayes-training design unless another population script fills it.
+
+## Run Frequency
+Run only when creating or resetting the database object.
+
+Do not run this daily unless you intentionally want to drop and recreate the table.
+
+## Suggested Command / Execution
+Run in SQL Server Management Studio or your SQL runner while connected to:
+
+lol_esports
+
+## Required Before Running
+No upstream table is required because this file only creates the target table.
+
+## Required After Running
+A population process is required to insert rows.
+
+This file alone creates an empty table.
+
+## Health Checks
+
+Check table exists:
+SELECT
+    OBJECT_ID('dbo.lol_bayes_matchup_training', 'U') AS object_id;
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.lol_bayes_matchup_training;
+
+Check row count by league/season:
+SELECT
+    league,
+    season,
+    COUNT(*) AS rows_count,
+    COUNT(DISTINCT series_id) AS series_count,
+    MIN(series_date) AS first_series_date,
+    MAX(series_date) AS last_series_date
+FROM dbo.lol_bayes_matchup_training
+GROUP BY league, season
+ORDER BY season DESC, league;
+
+Check duplicate series/team risk:
+SELECT
+    series_id,
+    teamname,
+    COUNT(*) AS rows_count
+FROM dbo.lol_bayes_matchup_training
+GROUP BY series_id, teamname
+HAVING COUNT(*) > 1;
+
+## Important Risk Areas
+
+### Risk 1: Drops existing table
+This file drops dbo.lol_bayes_matchup_training if it exists. Running it will erase any populated training rows.
+
+### Risk 2: Creates structure only
+This is not a full model-building file. It does not insert any rows.
+
+### Risk 3: May be superseded by newer Bayes views
+The current Team Overview app appears to use Bayes strength views. Confirm whether this table is still part of the active workflow.
+
+### Risk 4: Bucket fields are nullable
+If the population logic does not fill bucket fields, similar-matchup grouping will be weak.
+
+### Risk 5: Death edge interpretation
+Death edges may need careful interpretation because lower deaths are better, while positive death_diff might mean more deaths.
+
+## Recommended Future Enhancements
+- Add a companion population script documentation.
+- Add a stored procedure or SQL insert script to fill this table.
+- Add sample bucket logic definitions.
+- Add data lineage columns such as source_view, loaded_at, model_version.
+- Avoid DROP TABLE in normal refresh workflows; prefer TRUNCATE/INSERT or versioned rebuild.
+
+## System Flow
+Intended flow:
+
+historical series/player/lane stats
+    -> population script or SQL insert process
+    -> dbo.lol_bayes_matchup_training
+    -> Bayesian matchup modeling
+    -> Team Overview / scenario decisions
+
+## Documentation Status
+Category: SQL table creation
+Consumes: No data directly
+Creates: dbo.lol_bayes_matchup_training
+Run frequency: Setup only / reset only
+Daily pre-lock required: No
+Daily post-results required: No
+Critical dependency: downstream population process
+Critical risk: drops populated table if rerun

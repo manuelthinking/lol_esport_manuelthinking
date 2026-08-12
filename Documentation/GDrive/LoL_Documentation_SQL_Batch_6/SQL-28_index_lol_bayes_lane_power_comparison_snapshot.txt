@@ -1,0 +1,117 @@
+# SQL-28_index_lol_bayes_lane_power_comparison_snapshot
+
+## Source SQL File
+28_index_lol_bayes_lane_power_comparison_snapshot.sql
+
+## Purpose
+Adds indexes to the Bayes vs Lane Power comparison snapshot table.
+
+In plain English:
+This file creates lookup indexes so the snapshot table can be filtered and summarized faster by date/league, game/team, and warning flags.
+
+## SQL Object Updated
+Adds indexes to:
+
+dbo.lol_bayes_lane_power_comparison_snapshot
+
+## Data It Consumes
+No data is consumed directly.
+
+This file only creates indexes if they do not already exist.
+
+## Indexes Created
+
+### IX_lol_bayes_lane_power_snapshot_date_league
+Columns:
+- game_date
+- league
+
+Purpose:
+Supports date/league filtering and backtest review by date.
+
+### IX_lol_bayes_lane_power_snapshot_game_team
+Columns:
+- game_id
+- team
+- opponent
+
+Purpose:
+Supports game/team lookups and validation of team-perspective rows.
+
+### IX_lol_bayes_lane_power_snapshot_flags
+Columns:
+- bayes_overconfidence_warning_flag
+- bayes_possible_upset_signal_flag
+- lane_power_breaks_bayes_tie_flag
+
+Purpose:
+Supports warning-flag summary queries.
+
+## Run Frequency
+Run once after the snapshot table exists.
+
+It is safe to rerun because each CREATE INDEX is guarded by IF NOT EXISTS.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_lane_power_comparison_snapshot
+
+The table should be created first by file 26.
+
+## Health Checks
+
+Check indexes exist:
+SELECT
+    i.name,
+    i.type_desc
+FROM sys.indexes i
+WHERE i.object_id = OBJECT_ID('dbo.lol_bayes_lane_power_comparison_snapshot')
+ORDER BY i.name;
+
+Check index columns:
+SELECT
+    i.name AS index_name,
+    c.name AS column_name,
+    ic.key_ordinal
+FROM sys.indexes i
+JOIN sys.index_columns ic
+    ON i.object_id = ic.object_id
+   AND i.index_id = ic.index_id
+JOIN sys.columns c
+    ON ic.object_id = c.object_id
+   AND ic.column_id = c.column_id
+WHERE i.object_id = OBJECT_ID('dbo.lol_bayes_lane_power_comparison_snapshot')
+ORDER BY i.name, ic.key_ordinal;
+
+## Important Risk Areas
+
+### Risk 1: Table must exist
+If the snapshot table does not exist, this script will fail.
+
+### Risk 2: Columns must exist
+If the snapshot table was created from an older/newer version of the view without these columns, index creation will fail.
+
+### Risk 3: Does not include actual result columns
+These indexes do not directly cover actual_won_series or accuracy fields. The current indexes are probably enough for your current summaries, but performance can be reviewed later.
+
+## Recommended Future Enhancements
+- Add index for actual_won_series if summaries become slow.
+- Add index for bayes_lane_alignment_label / upset_signal_label if grouping gets slow.
+- Consider columnstore index if the snapshot grows large.
+- Add index validation to Command Center.
+
+## System Flow
+SQL-26 creates snapshot table
+    -> SQL-27 populates snapshot table
+    -> SQL-28 adds indexes
+    -> SQL-29/30 summary views query snapshot table
+
+## Documentation Status
+Category: SQL index creation
+Consumes: No data directly
+Updates: indexes on dbo.lol_bayes_lane_power_comparison_snapshot
+Run frequency: Setup only / safe to rerun
+Daily pre-lock required: No
+Daily post-results required: No
+Critical dependency: snapshot table exists with expected columns
+Critical risk: column/schema drift from source view changes

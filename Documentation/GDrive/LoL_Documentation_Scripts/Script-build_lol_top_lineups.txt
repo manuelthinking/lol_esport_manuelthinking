@@ -1,0 +1,131 @@
+# Script-build_lol_top_lineups
+
+## Purpose
+Builds top DraftKings LoL lineups for a selected slate.
+
+It does three major jobs:
+1. Loads the current DK slate player pool from SQL Server.
+2. Builds player and TEAM-slot projections using lane ratings and team series profile data.
+3. Builds optimized lineups using salary cap, stack-shape rules, CPT rules, and scenario rules.
+
+This is one of the core scripts behind the lineup-building workflow.
+
+## Data It Consumes
+
+### SQL Tables / Views
+- dbo.dk_lol_slate_player
+- dbo.lol_player_lane_ratings
+- dbo.lol_team_series_profiles
+
+### CSV Inputs
+- C:\DailyDFS\LoL\data\manual_starters.csv
+
+The manual starters file is used to filter the player pool down to expected starters.
+
+Required starter columns:
+- teamname
+- position
+- playername
+- is_starter
+
+If the file is missing, invalid, or does not match any slate players, the script falls back to using all non-CPT player rows.
+
+## Data It Creates
+
+### Main Output
+Writes lineup CSVs to:
+
+C:\DailyDFS\LoL\lineups\
+
+Default filename pattern:
+
+top_{num_lineups}_lol_lineups_{slate_date}_{slate_name}.csv
+
+## Main Internal Dataframes
+- players
+- team_rows
+- team_df
+- profiles_df
+- predictions_df
+- player_proj_df
+- team_proj_df
+
+## Key Lineup Rules
+- Salary cap defaults to 50000.
+- Default stack shapes are 4-3 and 4-2-1.
+- Max team count defaults to 4.
+- CPT team must have at least 3 total roster spots by default.
+- TEAM slot must be part of a stack of at least 3.
+- Default CPT candidates are ADC, MID, and JNG.
+- TEAM slot must come from a projected winner.
+- No 3+ stack from projected loser.
+- 0-2 loser max 1 roster spot.
+- 1-2 loser max 2 roster spots.
+- Do not stack both sides of the same matchup.
+
+## What Uses This Script
+Can be run directly from PowerShell or imported by the Streamlit lineup builder.
+
+Known downstream usage:
+- app_lol_lineup_builder.py
+
+## Run Frequency
+Run on slate days after:
+1. DK slate has been loaded.
+2. Starter file has been reviewed.
+3. Historical profiles are current enough.
+4. Slate/team matching looks healthy.
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\build_lol_top_lineups.py --date 2026-05-27 --slate lpl_lck_main --num-lineups 20
+
+## Important Risk Areas
+- Auto-detects latest slate if date/slate are omitted.
+- Manual starters fallback can hide starter matching problems.
+- Team profile matching depends on consistent team names.
+- Standalone CLI should unpack build_top_lineups return value correctly.
+- CPT records should ideally carry game_info and selected_result fields.
+
+## Health Checks
+
+Check slate rows:
+SELECT
+    slate_date,
+    slate_name,
+    COUNT(*) AS rows_count
+FROM dbo.dk_lol_slate_player
+GROUP BY slate_date, slate_name
+ORDER BY slate_date DESC;
+
+Check TEAM rows:
+SELECT
+    slate_date,
+    slate_name,
+    COUNT(*) AS team_rows
+FROM dbo.dk_lol_slate_player
+WHERE UPPER(LTRIM(RTRIM(ISNULL(dk_position, '')))) = 'TEAM'
+GROUP BY slate_date, slate_name
+ORDER BY slate_date DESC;
+
+## System Flow
+DK Slate CSV
+    -> dbo.dk_lol_slate_player
+    -> Script-build_lol_top_lineups
+    -> Player projections + TEAM projections
+    -> Optimized lineup CSV
+
+Historical data chain:
+Oracle Elixir / Historical Results
+    -> fact_lol_player_game / team series result tables
+    -> dbo.lol_player_lane_ratings
+    -> dbo.lol_team_series_profiles
+    -> Script-build_lol_top_lineups
+
+## Documentation Status
+Category: Lineup generation script
+Run frequency: Slate days / after slate + starters + profiles are updated
+Creates permanent output: Yes, lineup CSV
+Needs daily data refresh before use: Yes
+Critical dependency: dbo.dk_lol_slate_player
+Critical risk: stale slate detection, starter filtering, team/profile matching

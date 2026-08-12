@@ -1,0 +1,284 @@
+# SQL-16_create_vw_lol_bayes_strength_matchups_point_in_time
+
+## Source SQL File
+16_create_vw_lol_bayes_strength_matchups_point_in_time.sql
+
+## Purpose
+Creates the main point-in-time Bayesian strength matchup source.
+
+In plain English:
+This view combines point-in-time team strength matchup buckets with point-in-time lane strength matchup buckets. It is the main historical source for Bayesian backtesting without future-data leakage.
+
+This is a cleaner backtest source than the non-point-in-time Bayes strength view because all strength buckets are calculated using only data available before the target series date.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+This is a view.
+
+## Data It Consumes
+
+### Source Views
+- dbo.vw_lol_team_strength_matchups_point_in_time
+- dbo.vw_lol_lane_strength_matchups_point_in_time
+
+## Data It Creates
+Creates one row per:
+
+team per historical target series
+
+## Grain
+One row per:
+- target_series_id
+- teamname
+
+## Main Logic
+Selects the team-strength PIT layer from:
+
+dbo.vw_lol_team_strength_matchups_point_in_time
+
+Then left joins the lane-strength PIT layer from:
+
+dbo.vw_lol_lane_strength_matchups_point_in_time
+
+Join conditions:
+- target_series_id
+- league
+- season
+- normalized teamname
+- normalized opponent_teamname
+
+## Output Columns
+
+### Series / Actual Result
+- target_series_id
+- league
+- season
+- target_series_date
+- teamname
+- opponent_teamname
+- actual_series_result
+- actual_won_series
+- actual_game_wins
+- actual_game_losses
+
+### Team Strength PIT Layer
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+- team_strength_sample_label
+- opponent_strength_sample_label
+- team_prior_series_count
+- opponent_prior_series_count
+- team_prior_series_wins
+- team_prior_series_losses
+- opponent_prior_series_wins
+- opponent_prior_series_losses
+- team_prior_game_wins
+- team_prior_game_losses
+- opponent_prior_game_wins
+- opponent_prior_game_losses
+- team_raw_prior_series_win_rate
+- opponent_raw_prior_series_win_rate
+- team_smoothed_prior_series_win_rate
+- opponent_smoothed_prior_series_win_rate
+- smoothed_strength_gap
+- league_prior_rows
+- league_prior_win_rate
+- prior_weight
+
+### Lane Strength PIT Layer
+- team_top_strength
+- team_jng_strength
+- team_mid_strength
+- team_bot_strength
+- team_sup_strength
+- opponent_top_strength
+- opponent_jng_strength
+- opponent_mid_strength
+- opponent_bot_strength
+- opponent_sup_strength
+- top_lane_matchup_bucket
+- jng_lane_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+- team_top_sample_label
+- team_jng_sample_label
+- team_mid_sample_label
+- team_bot_sample_label
+- team_sup_sample_label
+- opponent_top_sample_label
+- opponent_jng_sample_label
+- opponent_mid_sample_label
+- opponent_bot_sample_label
+- opponent_sup_sample_label
+- team_top_dk_index
+- team_jng_dk_index
+- team_mid_dk_index
+- team_bot_dk_index
+- team_sup_dk_index
+- opponent_top_dk_index
+- opponent_jng_dk_index
+- opponent_mid_dk_index
+- opponent_bot_dk_index
+- opponent_sup_dk_index
+- team_top_games
+- team_jng_games
+- team_mid_games
+- team_bot_games
+- team_sup_games
+- opponent_top_games
+- opponent_jng_games
+- opponent_mid_games
+- opponent_bot_games
+- opponent_sup_games
+- team_top_kill_index
+- team_jng_kill_index
+- team_mid_kill_index
+- team_bot_kill_index
+- team_sup_assist_index
+- opponent_top_kill_index
+- opponent_jng_kill_index
+- opponent_mid_kill_index
+- opponent_bot_kill_index
+- opponent_sup_assist_index
+
+## What Uses This Data
+This is intended to be the main source for:
+- historical Bayes backtesting without leakage
+- model confidence calibration
+- determining which sample types perform best
+- validating strength/lane matchup rules
+- future point-in-time scenario recommendation logic
+
+Likely downstream:
+- vw_lol_bayes_prediction_backtest_match_level
+- Command Center Bayes backtest page
+- Team Overview Bayesian logic if upgraded to PIT view
+- future prediction tracking validation
+
+## Run Frequency
+Run when creating or updating the view definition.
+
+Because this is a view, it updates automatically when upstream PIT views update.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_team_strength_matchups_point_in_time
+- dbo.vw_lol_lane_strength_matchups_point_in_time
+
+Those require:
+- dbo.vw_lol_team_strength_bucket_point_in_time
+- dbo.vw_lol_lane_strength_bucket_point_in_time
+- dbo.lol_team_series_results
+- dbo.fact_lol_player_game
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_bayes_strength_matchups_point_in_time;
+
+Check sample groups:
+SELECT
+    league,
+    season,
+    strength_matchup_bucket,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket,
+    COUNT(*) AS sample_rows,
+    AVG(CAST(actual_won_series AS FLOAT)) AS actual_win_rate
+FROM dbo.vw_lol_bayes_strength_matchups_point_in_time
+GROUP BY
+    league,
+    season,
+    strength_matchup_bucket,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket
+ORDER BY sample_rows DESC;
+
+Check null lane joins:
+SELECT TOP 100
+    league,
+    season,
+    target_series_date,
+    teamname,
+    opponent_teamname,
+    strength_matchup_bucket,
+    mid_lane_matchup_bucket,
+    bot_lane_matchup_bucket,
+    sup_lane_matchup_bucket
+FROM dbo.vw_lol_bayes_strength_matchups_point_in_time
+WHERE mid_lane_matchup_bucket IS NULL
+   OR bot_lane_matchup_bucket IS NULL
+   OR sup_lane_matchup_bucket IS NULL
+ORDER BY target_series_date DESC;
+
+Check early-season low samples:
+SELECT TOP 100
+    league,
+    season,
+    target_series_date,
+    teamname,
+    opponent_teamname,
+    team_prior_series_count,
+    opponent_prior_series_count,
+    team_strength_sample_label,
+    opponent_strength_sample_label,
+    strength_matchup_bucket
+FROM dbo.vw_lol_bayes_strength_matchups_point_in_time
+ORDER BY target_series_date ASC;
+
+## Important Risk Areas
+
+### Risk 1: Inherits hard-coded 2026
+This view itself does not filter season directly, but all upstream PIT views are hard-coded to 2026.
+
+### Risk 2: Lane layer is left joined
+Team-strength rows remain even if lane matchup rows are missing. This is useful, but null lane buckets must be monitored.
+
+### Risk 3: Small sample fragmentation
+Combining team strength + MID/BOT/SUP lane buckets can create very small sample groups. Downstream logic needs fallback sample tiers.
+
+### Risk 4: Same-date exclusion
+Because upstream views use prior date only, same-date earlier series are excluded.
+
+### Risk 5: This is historical backtest source, not necessarily live slate source
+For current/upcoming slates, you need a separate live/current-slate process that computes strength as of today.
+
+## Recommended Future Enhancements
+- Build a live-slate point-in-time version using current date/slate date.
+- Remove hard-coded 2026 from upstream views.
+- Add sample-tier summary view.
+- Add Command Center health page for PIT sample sizes.
+- Connect this view directly to Bayes backtest views if not already done.
+- Compare PIT backtest accuracy against non-PIT backtest accuracy.
+
+## System Flow
+dbo.lol_team_series_results
+    -> dbo.vw_lol_team_strength_bucket_point_in_time
+    -> dbo.vw_lol_team_strength_matchups_point_in_time
+
+dbo.fact_lol_player_game
+    -> dbo.vw_lol_lane_strength_bucket_point_in_time
+    -> dbo.vw_lol_lane_strength_matchups_point_in_time
+
+combined:
+    -> dbo.vw_lol_bayes_strength_matchups_point_in_time
+    -> Bayes backtesting / model confidence calibration
+
+## Documentation Status
+Category: SQL point-in-time combined Bayes view
+Consumes: PIT team matchup view and PIT lane matchup view
+Creates: dbo.vw_lol_bayes_strength_matchups_point_in_time
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, unless used by live current-slate logic later
+Daily post-results required: Source refresh only
+Critical dependency: all upstream PIT views
+Critical risk: inherited hard-coded 2026, null lane joins, small sample fragmentation

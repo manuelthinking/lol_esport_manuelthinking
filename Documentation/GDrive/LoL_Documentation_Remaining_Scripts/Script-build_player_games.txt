@@ -1,0 +1,267 @@
+# Script-build_player_games
+
+## Purpose
+Builds the player-level game fact table from Oracle Elixir staging rows.
+
+In plain English:
+It reads JSON rows from raw.oracle_elixir_match_data_staging, keeps only player rows, converts them into structured columns, calculates basic DK points, and writes them to dbo.fact_lol_player_game.
+
+This is a core upstream script for historical player, lane, and matchup analysis.
+
+## Data It Consumes
+
+### Source Table
+- raw.oracle_elixir_match_data_staging
+
+The script reads:
+- row_json
+
+Each row_json contains one Oracle Elixir row.
+
+## Rows It Keeps
+Only player positions are kept:
+- top
+- jng
+- mid
+- bot
+- sup
+
+Team rows and non-player rows are ignored.
+
+## Main Fields Extracted From JSON
+- gameid
+- league
+- year
+- split
+- patch
+- date
+- playoffs
+- side
+- position
+- playername
+- playerid
+- teamname
+- champion
+- result
+- kills
+- deaths
+- assists
+- total_cs
+- cspm
+- totalgold
+- earnedgold
+- damagetochampions
+- dpm
+- damageshare
+- wardsplaced
+- wardskilled
+- visionscore
+- firstblood
+- golddiffat10
+- xpdiffat10
+- csdiffat10
+- gamelength
+
+## Data It Creates
+
+### Target Table
+- dbo.fact_lol_player_game
+
+The script truncates the table, then inserts rebuilt player-game rows.
+
+## Grain
+One row per player per game.
+
+Expected normal game shape:
+- 10 player rows per game
+- 5 blue-side players
+- 5 red-side players
+
+## Main Output Fields
+- game_id
+- league
+- season
+- split
+- patch
+- game_date
+- playoff_game
+- side
+- position
+- player_name
+- player_id
+- team_name
+- opponent_name
+- champion
+- result
+- kills
+- deaths
+- assists
+- cs
+- cspm
+- total_gold
+- earned_gold
+- dmg_to_champs
+- dpm
+- damage_share
+- wards_placed
+- wards_killed
+- vision_score
+- first_blood
+- gold_diff_10
+- xp_diff_10
+- cs_diff_10
+- game_length_seconds
+- dk_points
+
+## DK Points Logic
+The current script uses a simple placeholder DK scoring formula:
+
+dk_points = kills * 3 + assists * 2 - deaths
+
+Important:
+This is not full DraftKings LoL scoring yet.
+
+It does not currently include:
+- creep score points
+- 10+ kills/assists bonus
+- games-not-played bonus
+- other DK-specific scoring components
+
+This table is useful for early modeling, but full DK scoring is handled more completely in later team-game / series scripts.
+
+## Refresh Behavior
+The script runs:
+
+TRUNCATE TABLE dbo.fact_lol_player_game
+
+Then inserts all rebuilt rows from staging.
+
+This is a full rebuild table.
+
+## What Uses This Data
+Known downstream script:
+- Script-build_lane_matchups
+
+Likely downstream use:
+- lane matchup analysis
+- player/lane ratings
+- lane strength buckets
+- Team Overview app
+- Bayes/lane-power features
+- projection adjustments
+
+## Run Frequency
+Run after Oracle Elixir staging data is refreshed.
+
+Recommended order:
+1. Script-ingest_oracle_elixir
+2. Script-build_player_games
+3. Script-build_lane_matchups
+4. downstream views/scripts
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\build_player_games.py
+
+## Required Before Running
+Make sure raw.oracle_elixir_match_data_staging has current Oracle Elixir rows.
+
+## Output Validation
+The script prints:
+- connected database
+- preview of player_df
+- player row count
+- inserted rows
+- final SQL count
+
+Good signs:
+- player rows > 0
+- roughly 10 rows per unique game
+- final SQL count equals inserted row count
+- positions are limited to top/jng/mid/bot/sup
+
+## SQL Health Checks
+
+Check row counts:
+SELECT
+    season,
+    league,
+    COUNT(*) AS player_game_rows,
+    COUNT(DISTINCT game_id) AS unique_games,
+    MIN(game_date) AS first_game_date,
+    MAX(game_date) AS last_game_date
+FROM dbo.fact_lol_player_game
+GROUP BY season, league
+ORDER BY season DESC, league;
+
+Check 10 player rows per game:
+SELECT
+    game_id,
+    COUNT(*) AS player_rows,
+    COUNT(DISTINCT team_name) AS teams,
+    COUNT(DISTINCT position) AS positions
+FROM dbo.fact_lol_player_game
+GROUP BY game_id
+HAVING COUNT(*) <> 10
+ORDER BY game_id;
+
+Check latest rows:
+SELECT TOP 50
+    game_date,
+    league,
+    game_id,
+    side,
+    team_name,
+    position,
+    player_name,
+    champion,
+    kills,
+    deaths,
+    assists,
+    dk_points
+FROM dbo.fact_lol_player_game
+ORDER BY game_date DESC, game_id, side, position;
+
+## Important Risk Areas
+
+### Risk 1: Full truncate and rebuild
+If the insert fails after truncate, dbo.fact_lol_player_game can be empty until rerun.
+
+### Risk 2: DK scoring is only a placeholder
+The current dk_points formula does not represent full DK scoring. Be careful using it as final fantasy scoring.
+
+### Risk 3: Depends on staging JSON column names
+If Oracle columns change or staging JSON keys are different, fields may become null.
+
+### Risk 4: opponent_name is always None
+The script currently sets opponent_name to None. If downstream logic needs opponent_name, it must be derived elsewhere or added later.
+
+### Risk 5: Limited fields
+This script captures 10-minute diff fields but does not currently include 15-minute diff fields. Other scripts may use a richer Oracle CSV path for 15-minute metrics.
+
+## Recommended Future Enhancements
+- Upgrade dk_points to full DraftKings LoL scoring.
+- Populate opponent_name by game/team pairing.
+- Add 15-minute metrics if available in staging.
+- Add validation for exactly 10 player rows per game.
+- Add source_year/source_file or loaded_at lineage fields if not already handled by target table.
+
+## System Flow
+Oracle Elixir CSV / download
+    -> Script-ingest_oracle_elixir
+    -> raw.oracle_elixir_match_data_staging
+    -> Script-build_player_games
+    -> dbo.fact_lol_player_game
+    -> Script-build_lane_matchups
+    -> dbo.fact_lol_lane_matchup
+
+## Documentation Status
+Category: Oracle Elixir player-game fact builder
+Consumes: raw.oracle_elixir_match_data_staging
+Creates: dbo.fact_lol_player_game
+Run frequency: After Oracle staging is refreshed
+Daily pre-lock required: Conditional, only if latest Oracle data is being used
+Daily post-results required: Yes, if new games were added
+Downstream use: lane matchups, lane ratings, Team Overview, lane power
+Critical dependency: raw.oracle_elixir_match_data_staging
+Critical risk: full truncate/rebuild, placeholder DK scoring

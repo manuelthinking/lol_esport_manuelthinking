@@ -1,0 +1,117 @@
+# SQL-41_index_lol_bayes_lane_power_backtest_pit_snapshot
+
+## Source SQL File
+41_index_lol_bayes_lane_power_backtest_pit_snapshot.sql
+
+## Purpose
+Creates indexes on the PIT Bayes/Lane Power backtest snapshot table.
+
+In plain English:
+This file adds indexes to speed up PIT backtest queries by date/league, alignment label, and warning flags.
+
+## SQL Object Updated
+Adds indexes to:
+
+dbo.lol_bayes_lane_power_backtest_pit_snapshot
+
+## Data It Consumes
+No data is consumed directly.
+
+This file only creates indexes if they do not already exist.
+
+## Indexes Created
+
+### IX_lol_pit_backtest_date_league
+Columns:
+- game_date
+- league
+
+Purpose:
+Speeds up date and league filtering.
+
+### IX_lol_pit_backtest_alignment
+Columns:
+- bayes_lane_alignment_label
+
+Purpose:
+Speeds up grouping/filtering by Bayes/Lane alignment label.
+
+### IX_lol_pit_backtest_flags
+Columns:
+- bayes_overconfidence_warning_flag
+- bayes_possible_upset_signal_flag
+- lane_power_breaks_bayes_tie_flag
+
+Purpose:
+Speeds up warning flag analysis.
+
+## Run Frequency
+Run once after the snapshot table exists.
+
+Safe to rerun because each index is guarded by IF NOT EXISTS.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_lane_power_backtest_pit_snapshot
+
+## Health Checks
+
+Check indexes:
+SELECT
+    i.name,
+    i.type_desc
+FROM sys.indexes i
+WHERE i.object_id = OBJECT_ID('dbo.lol_bayes_lane_power_backtest_pit_snapshot')
+ORDER BY i.name;
+
+Check index columns:
+SELECT
+    i.name AS index_name,
+    c.name AS column_name,
+    ic.key_ordinal
+FROM sys.indexes i
+JOIN sys.index_columns ic
+    ON i.object_id = ic.object_id
+   AND i.index_id = ic.index_id
+JOIN sys.columns c
+    ON ic.object_id = c.object_id
+   AND ic.column_id = c.column_id
+WHERE i.object_id = OBJECT_ID('dbo.lol_bayes_lane_power_backtest_pit_snapshot')
+ORDER BY i.name, ic.key_ordinal;
+
+## Important Risk Areas
+
+### Risk 1: Table must exist
+If file 39 has not been run, this script fails.
+
+### Risk 2: Columns must exist
+If the table schema changed or was created with an older version, index creation can fail.
+
+### Risk 3: No unique index
+This file does not enforce uniqueness. It only adds query-performance indexes.
+
+### Risk 4: Missing index for target_series_id/team
+If target-series lookups become common, another index may be needed.
+
+## Recommended Future Enhancements
+- Add unique index on backtest_version + target_series_id + team + opponent.
+- Add index on target_series_id.
+- Add index on league + bayes_lane_alignment_label.
+- Add index on season + league if multi-season data is stored.
+- Add columnstore index if the snapshot grows large.
+
+## System Flow
+SQL-39 creates table
+    -> SQL-40 refreshes rows
+    -> SQL-41 adds indexes
+    -> PIT backtest review queries
+
+## Documentation Status
+Category: SQL index creation
+Consumes: No data directly
+Updates: indexes on dbo.lol_bayes_lane_power_backtest_pit_snapshot
+Run frequency: Setup only / safe to rerun
+Daily pre-lock required: No
+Daily post-results required: No
+Critical dependency: PIT backtest snapshot table exists
+Critical risk: no unique index, missing target_series lookup index

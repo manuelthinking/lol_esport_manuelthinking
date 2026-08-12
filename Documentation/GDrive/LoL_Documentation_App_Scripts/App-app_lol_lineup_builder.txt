@@ -1,0 +1,207 @@
+# App-app_lol_lineup_builder
+
+## Purpose
+Streamlit Scenario Lineup Builder for DraftKings LoL.
+
+In plain English:
+This app lets you pick the exact expected series result for each matchup, rebuilds player and TEAM projections based on those selected outcomes, and then generates optimized lineups using the lineup builder logic from scripts/build_lol_top_lineups.py.
+
+This is the main interactive pre-lock lineup-building app.
+
+## Type
+Streamlit app.
+
+## Suggested Run Command
+cd C:\DailyDFS\LoL
+python -m streamlit run .\app_lol_lineup_builder.py
+
+## Data It Consumes
+
+### Python Script Dependency
+Imports functions from:
+- scripts.build_lol_top_lineups
+
+Important imported functions:
+- connect
+- load_manual_starters
+- load_slate_players
+- load_team_rows
+- apply_manual_starters
+- build_team_overview
+- get_slate_profile_team_names
+- load_series_profiles_for_slate
+- build_top_lineups
+- lineups_to_df
+- get_position_multiplier
+- get_position_ceiling_multiplier
+
+### SQL Tables / Views
+Direct/indirect sources include:
+- dbo.dk_lol_slate_player
+- dbo.lol_team_series_profiles
+- dbo.lol_player_series_profiles
+
+The app gets slate dates and slate names from dbo.dk_lol_slate_player.
+
+### Local Files
+- C:\DailyDFS\LoL\data\manual_starters.csv
+- C:\DailyDFS\LoL\lineups
+
+## Data It Creates
+Creates lineup CSV files in:
+
+C:\DailyDFS\LoL\lineups
+
+The exact output path is created inside the app when lineups are built.
+
+## Main Tabs
+1. Match Results
+2. Projections
+3. Build Lineups
+4. Raw Inputs
+
+## Tab Details
+
+### Match Results
+User selects the exact expected result for each matchup.
+
+Options are generally:
+- Team A 2-0
+- Team A 2-1
+- Team B 2-1
+- Team B 2-0
+
+These selections control the projection model.
+
+### Projections
+Shows scenario-based projections:
+- player projections
+- TEAM slot projections
+- historical player ranges
+- floor/typical/ceiling values
+- CPT salary/projection/value
+- model fallback projection
+- selected series result
+
+### Build Lineups
+Lets user configure lineup rules:
+- number of lineups
+- salary cap
+- minimum difference between lineups
+- max candidates
+- stack shapes
+- max from team
+- minimum CPT team stack
+- minimum TEAM slot stack
+- allowed CPT positions
+- objective mode
+
+Allowed stack shapes include:
+- 4-3
+- 4-2-1
+
+Allowed CPT positions can include:
+- ADC
+- MID
+- JNG
+- TOP
+- SUP
+- TEAM
+
+Objective options:
+- Projection
+- Ceiling
+- Projection + Structure
+
+### Raw Inputs
+Shows raw data used by the builder.
+
+## Projection Logic
+This app uses selected series outcomes to determine:
+- expected games
+- sweep bonus
+- player projected DK
+- floor
+- ceiling
+- value
+- CPT projection/value
+- TEAM slot projection
+
+It also blends:
+- existing rating/player averages
+- team stack score
+- series profile data
+- player-level historical series profile ranges when available
+
+## Manual Starters
+The app can use manual starters only.
+
+If enabled:
+- loads manual_starters.csv
+- filters slate players to is_starter = 1 matches
+
+If manual starters are missing or do not match:
+- app may fall back to all non-CPT players
+
+## What Uses This App
+This app produces lineup CSVs for:
+- manual review
+- DraftKings entry workflow
+- future backtesting or comparison
+
+It is usually opened from or alongside the Command Center.
+
+## Run Frequency
+Run on slate days after:
+1. DK slate has been ingested.
+2. manual_starters.csv has been created and reviewed.
+3. team/player profile tables are current enough.
+4. Bayes / Team Overview scenario read has been reviewed.
+
+## Suggested Workflow Placement
+DK slate CSV
+    -> ingest_dk_lol_slate
+    -> build_manual_starters_from_dk
+    -> manual starter review
+    -> app_lol_team_overview / app_lol_command_center
+    -> app_lol_lineup_builder
+    -> lineup CSVs
+
+## Important Risk Areas
+
+### Risk 1: Depends heavily on build_lol_top_lineups.py
+If that script changes function signatures, the app can break.
+
+### Risk 2: Manual starter fallback
+If starters do not match, the app can use all non-CPT players. That can accidentally allow subs.
+
+### Risk 3: Scenario selection is manual
+Bad selected match results produce bad projections and lineups.
+
+### Risk 4: Player series profile dependency
+If dbo.lol_player_series_profiles is missing or stale, the app falls back more heavily to model projections.
+
+### Risk 5: TEAM slot rule UI may not fully alter backend behavior
+The app includes a TEAM Slot Rule selection, but the backend build_top_lineups rules are what ultimately enforce TEAM slot constraints.
+
+### Risk 6: Output naming and slate/date clarity
+Lineup files should be named clearly by slate date and slate name to avoid upload mistakes.
+
+## Recommended Future Enhancements
+- Add direct import of suggested scenarios from Team Overview.
+- Add one-click build for base / sweep / upset scenarios.
+- Add output filename preview before build.
+- Add validation that exactly 5 starters per team are available.
+- Add exposure summary after lineup build.
+- Add DraftKings upload-format export.
+- Add ability to compare multiple scenario builds side-by-side.
+
+## Documentation Status
+Category: Streamlit lineup builder app
+Consumes: DK slate table, manual starters, team series profiles, player series profiles, build_lol_top_lineups functions
+Creates: lineup CSVs
+Run frequency: Slate days pre-lock
+Pre-lock workflow: Yes
+Post-results workflow: No
+Critical dependency: scripts.build_lol_top_lineups, dbo.dk_lol_slate_player, manual_starters.csv
+Critical risk: starter fallback, scenario selection, imported function changes

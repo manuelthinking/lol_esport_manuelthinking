@@ -1,0 +1,155 @@
+# Script-build_manual_starters_from_dk
+
+## Purpose
+Creates the manual starters file used by the LoL lineup-building workflow.
+
+It reads the current DK slate file, lists all player options by team and position, adds last-played information from Oracle Elixir history, and creates manual_starters.csv for manual review.
+
+The output is used to mark expected starters:
+is_starter = 1
+
+## Data It Consumes
+
+### DK Slate CSV
+Reads from:
+C:\DailyDFS\LoL\data\slate_data
+
+Looks for:
+dk_lol_*.csv
+
+If no file is provided, it picks the latest modified DK file.
+
+Can pass exact file with:
+--dk-file
+
+## Required DK Columns
+- Name
+- Position
+- TeamAbbrev
+
+The script removes:
+- TEAM
+- CPT
+- CAPTAIN
+
+Keeps player positions:
+- top
+- jng
+- mid
+- bot
+- sup
+
+## Additional Input: Oracle Elixir Files
+Searches:
+- C:\DailyDFS\LoL\data\oracle_elixir_*.csv
+- C:\DailyDFS\LoL\data\manual_downloads\*OraclesElixir*.csv
+- C:\DailyDFS\LoL\data\manual_downloads\*Oracle*.csv
+
+Required Oracle columns:
+- date
+- playername
+- teamname
+- position
+
+Optional:
+- league
+
+## Data It Creates
+
+### Output File
+C:\DailyDFS\LoL\data\manual_starters.csv
+
+## Output Columns
+- league
+- teamname
+- position
+- playername
+- last_played_date
+- days_since_last_played
+- last_played_teamname
+- last_played_league
+- last_played_position
+- is_starter
+- notes
+
+## Position Normalization
+- TOP -> top
+- JNG -> jng
+- JUNGLE -> jng
+- MID -> mid
+- ADC -> bot
+- BOT -> bot
+- SUP -> sup
+- SUPPORT -> sup
+
+## Last-Played Logic
+For each player, finds most recent game in Oracle files and adds:
+- last_played_date
+- last_played_teamname
+- last_played_league
+- last_played_position
+- days_since_last_played
+
+days_since_last_played is calculated using slate date parsed from the DK filename.
+
+## What Uses This Output
+Direct downstream script:
+- Script-build_lol_top_lineups
+
+Flow:
+DK slate CSV
+    -> Script-build_manual_starters_from_dk
+    -> manual_starters.csv
+    -> manual review / set is_starter = 1
+    -> Script-build_lol_top_lineups
+    -> lineup CSVs
+
+## Run Frequency
+Run on slate days after the DK slate file is saved.
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\build_manual_starters_from_dk.py --dk-file "C:\DailyDFS\LoL\data\slate_data\dk_lol_2026-05-27_lpl_lck_main.csv"
+
+## Manual Step Required
+Open:
+C:\DailyDFS\LoL\data\manual_starters.csv
+
+Set:
+is_starter = 1
+
+for expected starters.
+
+## Important Risk Areas
+- Auto-detects latest DK file by modified time.
+- Overwrites manual_starters.csv every time it runs.
+- Last-played matching is by player name only.
+- league column is currently blank.
+- Does not automatically verify exactly 5 starters per team.
+
+## Health Checks
+PowerShell:
+Get-Item C:\DailyDFS\LoL\data\manual_starters.csv
+
+Preview:
+Import-Csv C:\DailyDFS\LoL\data\manual_starters.csv | Select-Object -First 20
+
+Check starters by team:
+Import-Csv C:\DailyDFS\LoL\data\manual_starters.csv |
+    Where-Object { $_.is_starter -eq "1" } |
+    Group-Object teamname |
+    Select-Object Name, Count
+
+Check starters by team and position:
+Import-Csv C:\DailyDFS\LoL\data\manual_starters.csv |
+    Where-Object { $_.is_starter -eq "1" } |
+    Sort-Object teamname, position |
+    Select-Object teamname, position, playername, last_played_date, days_since_last_played
+
+## Documentation Status
+Category: Pre-lock starter preparation script
+Consumes: DK slate CSV, Oracle Elixir CSV files
+Creates: C:\DailyDFS\LoL\data\manual_starters.csv
+Run frequency: Slate days after DK slate upload
+Pre-lock workflow: Yes
+Critical risk: overwriting manual edits, latest-file auto-detection, missing last-played matches

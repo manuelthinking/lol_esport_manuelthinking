@@ -1,0 +1,260 @@
+# SQL-25_create_vw_lol_bayes_lane_power_comparison_v1
+
+## Source SQL File
+25_create_vw_lol_bayes_lane_power_comparison_v1.sql
+
+## Purpose
+Creates a comparison view between point-in-time Bayes strength and lane-power signals.
+
+In plain English:
+This view joins the Bayes point-in-time team strength view to the lane-power upset resistance signal. It labels whether Bayes and lane power agree, whether Bayes may be overconfident, whether lane power suggests an underdog is live, or whether lane power breaks a Bayes toss-up.
+
+This is the alignment/conflict layer between Bayes and lane power.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_bayes_lane_power_comparison_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source Views
+- dbo.vw_lol_upset_resistance_signal_v1
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+## Data It Creates
+Creates one row per:
+
+game + team + opponent
+
+when lane signal rows exist.
+
+Bayes fields are left joined and may be NULL if no Bayes match is found.
+
+## Grain
+One row per team perspective per game.
+
+## Main Join Logic
+The lane signal is left joined to the Bayes PIT view on:
+
+- lane_signal.game_date = bayes.target_series_date
+- lane_signal.league = bayes.league
+- lane_signal.team = bayes.teamname
+- lane_signal.opponent = bayes.opponent_teamname
+
+## Main Output Groups
+
+### Identity
+- comparison_version
+- game_id
+- target_series_id
+- game_date
+- league
+- season
+- split
+- team
+- opponent
+
+### Actual Result
+- actual_series_result
+- actual_won_series
+- actual_game_wins
+- actual_game_losses
+
+### Bayes
+- bayes_win_pct
+- opponent_bayes_win_pct
+- smoothed_strength_gap
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+- team_strength_sample_label
+- opponent_strength_sample_label
+- team_prior_series_count
+- opponent_prior_series_count
+- team_raw_prior_series_win_rate
+- opponent_raw_prior_series_win_rate
+
+### Lane Power
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- top_lane_edge
+- jng_lane_edge
+- mid_lane_edge
+- adc_lane_edge
+- sup_lane_edge
+- opponent_neutral_or_better_lanes
+- opponent_neutral_or_better_carry_lanes
+- lane_favorite_status
+- upset_resistance_score
+- upset_resistance_tier
+- upset_signal_label
+- favorite_stomp_warning_flag
+- underdog_live_flag
+- favorite_stomp_support_flag
+
+### Derived Labels / Flags
+- bayes_favorite_status
+- bayes_lane_alignment_label
+- bayes_overconfidence_warning_flag
+- bayes_possible_upset_signal_flag
+- lane_power_breaks_bayes_tie_flag
+- bayes_predicted_win_flag
+- lane_power_predicted_win_flag
+- bayes_winner_correct_flag
+- lane_power_winner_correct_flag
+
+## Bayes Favorite Status Logic
+- NULL Bayes -> No Bayes Match
+- bayes_win_pct >= 0.65 -> Bayes Strong Favorite
+- bayes_win_pct >= 0.55 -> Bayes Lean Favorite
+- bayes_win_pct > 0.45 -> Bayes Toss-Up
+- bayes_win_pct > 0.35 -> Bayes Lean Underdog
+- else -> Bayes Strong Underdog
+
+Important:
+This view treats bayes_win_pct as a decimal probability, not 0-100.
+
+## Alignment Label Logic
+Labels include:
+- Lane Signal Only
+- Bayes Favorite / Lane Stomp Warning
+- Bayes Favorite / Lane Stomp Support
+- Bayes Favorite / Carry Lanes Questionable
+- Bayes Underdog / Lane Power Live
+- Bayes Toss-Up / Lane Power Has Lean
+- Bayes and Lane Signal Aligned or Neutral
+
+## Flag Logic
+
+### bayes_overconfidence_warning_flag
+1 when:
+- bayes_win_pct >= 0.65
+- favorite_stomp_warning_flag = 1
+
+### bayes_possible_upset_signal_flag
+1 when:
+- bayes_win_pct <= 0.45
+- underdog_live_flag = 1
+
+### lane_power_breaks_bayes_tie_flag
+1 when:
+- bayes_win_pct BETWEEN 0.45 AND 0.55
+- ABS(carry_lane_edge) >= 10
+
+### bayes_predicted_win_flag
+- 1 if bayes_win_pct >= 0.50
+- 0 if bayes_win_pct < 0.50
+- NULL if no Bayes match
+
+### lane_power_predicted_win_flag
+- 1 if carry_lane_edge >= 5
+- 0 if carry_lane_edge <= -5
+- NULL if carry lane edge is between -5 and 5
+
+## What Uses This Data
+Known or likely downstream:
+- app_lol_team_overview.py Lane Power PIT Adjustment
+- Command Center lane power review
+- Bayes/lane alignment backtesting
+- DFS scenario decision support
+- identifying Bayes overconfidence and upset resistance flags
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically when source views change.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_upset_resistance_signal_v1
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_bayes_lane_power_comparison_v1;
+
+Check alignment distribution:
+SELECT
+    league,
+    bayes_lane_alignment_label,
+    COUNT(*) AS rows_count,
+    AVG(CAST(bayes_winner_correct_flag AS FLOAT)) AS bayes_winner_accuracy,
+    AVG(CAST(lane_power_winner_correct_flag AS FLOAT)) AS lane_power_winner_accuracy
+FROM dbo.vw_lol_bayes_lane_power_comparison_v1
+GROUP BY league, bayes_lane_alignment_label
+ORDER BY league, rows_count DESC;
+
+Check priority flags:
+SELECT
+    league,
+    SUM(bayes_overconfidence_warning_flag) AS bayes_overconfidence_warnings,
+    SUM(bayes_possible_upset_signal_flag) AS bayes_possible_upset_signals,
+    SUM(lane_power_breaks_bayes_tie_flag) AS lane_power_breaks_bayes_ties,
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_bayes_lane_power_comparison_v1
+GROUP BY league;
+
+Check missing Bayes matches:
+SELECT TOP 100
+    game_date,
+    league,
+    team,
+    opponent,
+    bayes_favorite_status,
+    bayes_lane_alignment_label,
+    total_lane_edge,
+    carry_lane_edge
+FROM dbo.vw_lol_bayes_lane_power_comparison_v1
+WHERE target_series_id IS NULL
+ORDER BY game_date DESC, league, team;
+
+## Important Risk Areas
+
+### Risk 1: Join depends on exact team names and date
+Bayes join uses game_date, team, and opponent. If team names or dates differ, Bayes fields are NULL.
+
+### Risk 2: Bayes probability scale
+The logic assumes bayes_win_pct is 0-1. Some earlier app logic displays or stores Bayes as 0-100. This scale must stay consistent.
+
+### Risk 3: Historical lane signal, not live slate signal
+The lane signal source is built from actual historical games. For upcoming slates, a live-slate signal view is still needed.
+
+### Risk 4: Team perspective rows
+Each game has two rows, one for each team. Aggregations must handle that.
+
+### Risk 5: Lane-power win flag ignores total lane edge
+lane_power_predicted_win_flag uses carry_lane_edge only. That is intentional but should be backtested.
+
+## Recommended Future Enhancements
+- Add team name map to improve join coverage.
+- Add slate/date mapping if DK slate_date differs from actual game_date.
+- Add live/current-slate comparison view.
+- Add bayes probability scale validation.
+- Add one-row-per-match summary view.
+- Add model accuracy by alignment label and league.
+- Add Command Center health tile for missing Bayes matches.
+
+## System Flow
+dbo.vw_lol_upset_resistance_signal_v1
+dbo.vw_lol_bayes_strength_matchups_point_in_time
+    -> dbo.vw_lol_bayes_lane_power_comparison_v1
+    -> Team Overview Lane Power / Bayes comparison
+    -> scenario decision support
+
+## Documentation Status
+Category: SQL Bayes vs lane-power comparison view
+Consumes: upset resistance signal view, PIT Bayes strength matchup view
+Creates: dbo.vw_lol_bayes_lane_power_comparison_v1
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, until live-slate equivalent exists
+Daily post-results required: Source refresh only
+Critical dependency: team/date matching between lane signal and Bayes PIT
+Critical risk: date/team join mismatch, probability scale mismatch, historical not live-slate

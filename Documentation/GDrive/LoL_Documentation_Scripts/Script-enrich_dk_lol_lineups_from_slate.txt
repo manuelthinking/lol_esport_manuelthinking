@@ -1,0 +1,150 @@
+# Script-enrich_dk_lol_lineups_from_slate
+
+## Purpose
+Enriches historical DraftKings lineup result rows using original DK salary slate CSV files.
+
+It fills missing:
+- salary
+- team
+- actual_position
+
+It also updates lineup-level fields:
+- captain_team
+- captain_position
+- salary_used
+- salary_left
+- stack_structure
+- team_stack_summary
+
+This is a post-contest cleanup/enrichment script.
+
+## Data It Consumes
+
+### DK Salary Slate Files
+Reads all CSVs from:
+C:\DailyDFS\LoL\data\slate_data
+
+Expected filename pattern:
+dk_lol_YYYY-MM-DD_<slate_name>.csv
+
+It extracts:
+- slate_date
+- slate_name
+
+### Flexible CSV Columns
+Attempts to find:
+- Name / Player / player_name
+- Roster Position / Position / RosterPosition
+- Salary / salary
+- TeamAbbrev / Team / team / Team Abbrev
+
+Minimum required:
+- name
+- salary
+
+## SQL Tables Consumed
+- lol.fact_lineup_player
+- lol.fact_lineup_result
+- lol.dim_slate
+
+## Data It Updates
+
+### lol.fact_lineup_player
+Updates:
+- team
+- salary
+- actual_position
+
+### lol.fact_lineup_result
+Updates:
+- captain_team
+- captain_position
+- salary_used
+- salary_left
+- stack_structure
+- team_stack_summary
+
+## Matching Logic
+Attempts matching in this order:
+1. same slate_date + slate_name + player + roster slot
+2. same slate_date + player + roster slot
+3. same slate_date + player
+
+## Stack Logic
+Counts teams across all roster slots, including TEAM.
+
+Example:
+BLG 4 + HLE 3
+
+Outputs:
+stack_structure = 4-3
+team_stack_summary = BLG:4, HLE:3
+
+## What Uses This Data
+Downstream analysis:
+- top lineup analysis
+- contest results review
+- ownership training
+- stack structure backtesting
+- captain position analysis
+- salary-left analysis
+- lineup builder rule tuning
+- slate review dashboard
+
+## Run Frequency
+Run after contest lineup results are loaded and transformed.
+
+This is not needed before lock.
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\enrich_dk_lol_lineups_from_slate.py
+
+## Important Risk Areas
+- Reads every slate CSV in the slate folder.
+- Final fallback matches by date + player only.
+- Salary-used calculation depends on correct salary matching.
+- captain_position may need to use actual_position instead of position.
+
+## Health Checks
+SELECT
+    ds.slate_date,
+    ds.slate_name,
+    COUNT(*) AS missing_rows
+FROM lol.fact_lineup_player lp
+JOIN lol.fact_lineup_result lr
+    ON lp.lineup_result_id = lr.lineup_result_id
+JOIN lol.dim_slate ds
+    ON lr.slate_id = ds.slate_id
+WHERE lp.salary IS NULL
+   OR lp.team IS NULL
+GROUP BY ds.slate_date, ds.slate_name
+ORDER BY ds.slate_date DESC, ds.slate_name;
+
+SELECT
+    ds.slate_date,
+    ds.slate_name,
+    lr.stack_structure,
+    COUNT(*) AS lineup_count
+FROM lol.fact_lineup_result lr
+JOIN lol.dim_slate ds
+    ON lr.slate_id = ds.slate_id
+GROUP BY ds.slate_date, ds.slate_name, lr.stack_structure
+ORDER BY ds.slate_date DESC, ds.slate_name, lr.stack_structure;
+
+## System Flow
+DK contest standings / lineup results
+    -> lol.fact_lineup_result
+    -> lol.fact_lineup_player
+    -> Script-enrich_dk_lol_lineups_from_slate
+    -> enriched salary/team/position/stack fields
+    -> backtesting and contest analysis
+
+## Documentation Status
+Category: Contest results enrichment script
+Consumes: DK slate salary CSVs, lol.fact_lineup_player, lol.fact_lineup_result, lol.dim_slate
+Creates: No new table
+Updates: lol.fact_lineup_player, lol.fact_lineup_result
+Run frequency: After contest results are loaded
+Post-results workflow: Yes
+Critical risk: fallback matching by date/player only, captain position field mismatch

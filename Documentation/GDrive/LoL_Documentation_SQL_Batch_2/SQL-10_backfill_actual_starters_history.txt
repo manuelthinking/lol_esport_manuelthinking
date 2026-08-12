@@ -1,0 +1,229 @@
+# SQL-10_backfill_actual_starters_history
+
+## Source SQL File
+10_backfill_actual_starters_history.sql
+
+## Purpose
+Backfills actual starter/sub history from completed game records.
+
+In plain English:
+This SQL script looks at actual player-game records and writes one row per date/league/team/position/player into dbo.lol_manual_starters_history. It labels the top player in each team-position-day as starter and others as sub.
+
+This is useful for building historical actual-starter records after games are played.
+
+## SQL Object Updated
+Updates/inserts into:
+
+dbo.lol_manual_starters_history
+
+This is a MERGE script, not a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.fact_lol_player_game
+
+## Data It Creates / Updates
+
+### Target Table
+- dbo.lol_manual_starters_history
+
+It upserts rows with:
+
+source_type = actual_games
+
+## Grain
+One row per:
+
+slate_date + slate_name + teamname + position + playername
+
+Where:
+- slate_date = game_date
+- slate_name = actual_games
+- teamname = team_name
+- position = normalized position
+- playername = player_name
+
+## Main Filters
+The source player records are filtered to:
+
+- league IN ('LPL', 'LCK')
+- season = 2026
+- team_name IS NOT NULL
+- player_name IS NOT NULL
+- position IS NOT NULL
+- game_date IS NOT NULL
+
+Important:
+This script is hard-coded to season = 2026.
+
+## Position Normalization
+The script normalizes positions:
+- top -> top
+- jng / jungle -> jng
+- mid -> mid
+- bot / adc -> bot
+- sup / support -> sup
+
+## Starter/Sub Logic
+For each:
+- slate_date
+- league
+- teamname
+- position
+
+The script ranks players by:
+1. games_played DESC
+2. total_dk_points DESC
+3. playername
+
+Then:
+- rank 1 = starter
+- all others = sub
+
+Important:
+The script sets is_starter = 1 for every final row, even for subs. The distinction is stored in starter_role.
+
+This may be intentional if is_starter means "appeared in actual games," but the name can be confusing.
+
+## Fields Calculated
+- games_played
+- total_dk_points
+- avg_dk_points
+- actual_game_date
+- actual_league
+- actual_series_ids
+- starter_role
+
+## MERGE Match Conditions
+Matches existing rows by:
+- slate_date
+- slate_name
+- normalized teamname
+- normalized position
+- normalized playername
+
+When matched, it updates:
+- is_starter
+- source_file
+- source_type
+- starter_role
+- games_played
+- total_dk_points
+- avg_dk_points
+- actual_game_date
+- actual_league
+- actual_series_ids
+- updated_at
+
+When not matched, it inserts a new row.
+
+## Run Frequency
+Run after dbo.fact_lol_player_game has been refreshed with completed games.
+
+This is a post-results historical backfill script.
+
+It does not need to be part of pre-lock workflow.
+
+## Required Before Running
+Requires:
+- dbo.fact_lol_player_game
+- dbo.lol_manual_starters_history
+
+Important:
+dbo.lol_manual_starters_history must include the extra columns expected by this MERGE:
+- starter_role
+- games_played
+- total_dk_points
+- avg_dk_points
+- actual_game_date
+- actual_league
+- actual_series_ids
+
+The currently uploaded 09_create_lol_manual_starters_history.sql does not create those columns.
+
+## Health Checks
+
+Check actual-games rows loaded:
+SELECT
+    slate_date,
+    slate_name,
+    source_type,
+    COUNT(*) AS rows_count,
+    COUNT(DISTINCT teamname) AS teams,
+    COUNT(DISTINCT playername) AS players
+FROM dbo.lol_manual_starters_history
+WHERE source_type = 'actual_games'
+GROUP BY slate_date, slate_name, source_type
+ORDER BY slate_date DESC;
+
+Check starter/sub counts:
+SELECT
+    slate_date,
+    actual_league,
+    teamname,
+    position,
+    starter_role,
+    COUNT(*) AS rows_count
+FROM dbo.lol_manual_starters_history
+WHERE source_type = 'actual_games'
+GROUP BY slate_date, actual_league, teamname, position, starter_role
+ORDER BY slate_date DESC, actual_league, teamname, position, starter_role;
+
+Check positions with multiple starters:
+SELECT
+    slate_date,
+    actual_league,
+    teamname,
+    position,
+    SUM(CASE WHEN starter_role = 'starter' THEN 1 ELSE 0 END) AS starters
+FROM dbo.lol_manual_starters_history
+WHERE source_type = 'actual_games'
+GROUP BY slate_date, actual_league, teamname, position
+HAVING SUM(CASE WHEN starter_role = 'starter' THEN 1 ELSE 0 END) <> 1
+ORDER BY slate_date DESC, actual_league, teamname, position;
+
+## Important Risk Areas
+
+### Risk 1: Schema mismatch with file 09
+This script expects columns that are not created by the uploaded table creation file.
+
+This needs fixing before relying on this backfill.
+
+### Risk 2: Hard-coded season = 2026
+Future seasons will not backfill unless the script is updated.
+
+### Risk 3: is_starter = 1 for subs
+The script sets is_starter = 1 for both starter and sub rows, with starter/sub tracked separately in starter_role.
+
+This can cause confusion if downstream logic assumes is_starter = 1 means only starters.
+
+### Risk 4: Uses game_date as slate_date
+This is reasonable for actual history, but it may not match DraftKings slate_date when early morning games are assigned to a different slate date.
+
+### Risk 5: Team-position-day may not equal series-level starter
+If a player substitutes mid-series, the script ranks by games played and DK points. That is a practical heuristic, but not perfect.
+
+## Recommended Fixes
+1. Add missing columns to 09_create_lol_manual_starters_history.sql.
+2. Consider setting is_starter = CASE WHEN lane_player_rank = 1 THEN 1 ELSE 0 END.
+3. Add season parameter or remove hard-coded 2026.
+4. Consider using series_id or slate mapping instead of game_date only.
+5. Add loaded/run audit info if this backfill becomes a regular job.
+
+## System Flow
+dbo.fact_lol_player_game
+    -> SQL-10_backfill_actual_starters_history
+    -> dbo.lol_manual_starters_history
+    -> actual starter/sub audit
+    -> future starter validation and lineup review
+
+## Documentation Status
+Category: SQL MERGE/backfill
+Consumes: dbo.fact_lol_player_game
+Updates: dbo.lol_manual_starters_history
+Run frequency: Post-results after player-game data refresh
+Daily pre-lock required: No
+Daily post-results required: Conditional, if new completed games were added
+Critical dependency: complete lol_manual_starters_history schema
+Critical risk: schema mismatch, hard-coded 2026, is_starter semantics for subs

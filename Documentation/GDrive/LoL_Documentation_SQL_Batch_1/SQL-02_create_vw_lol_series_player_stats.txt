@@ -1,0 +1,235 @@
+# SQL-02_create_vw_lol_series_player_stats
+
+## Source SQL File
+02_create_vw_lol_series_player_stats.sql
+
+## Purpose
+Creates a source view intended to provide one row per player per historical series.
+
+In plain English:
+This view is supposed to standardize historical series-level player stats into the format needed by Bayesian population logic.
+
+Important:
+This SQL file is currently a TEMPLATE. It still references:
+
+dbo.YOUR_RAW_SERIES_PLAYER_TABLE_HERE
+
+That means it is not production-ready until the source table or source CTE is replaced with the real table/query.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_series_player_stats
+
+This is a view.
+
+## Data It Consumes
+Intended source:
+
+dbo.YOUR_RAW_SERIES_PLAYER_TABLE_HERE
+
+But this is a placeholder.
+
+The real source should provide one row per:
+- series_id
+- teamname
+- opponent_teamname
+- player
+- position
+
+## Required Source Columns
+The source CTE expects:
+
+- series_id
+- series_date
+- season
+- league
+- teamname
+- opponent_teamname
+- player_name
+- position
+- series_result
+- won_series
+- games_played
+- kills
+- deaths
+- assists
+- dk_points
+
+## Data It Creates
+Creates a standardized view with columns:
+
+- series_id
+- series_date
+- season
+- league
+- teamname
+- opponent_teamname
+- player_name
+- position
+- series_result
+- won_series
+- games_played
+- kills
+- deaths
+- assists
+- dk_points
+
+## Grain
+Intended grain:
+
+one row per player per team per historical series
+
+That means a normal best-of-3 series should have up to 10 player rows:
+- 5 players from Team A
+- 5 players from Team B
+
+## Position Normalization
+The view normalizes positions:
+
+- bot / adc -> BOT
+- jungle / jng -> JNG
+- top -> TOP
+- mid -> MID
+- support / sup -> SUP
+- anything else -> uppercase trimmed value
+
+Then final output filters to:
+- TOP
+- JNG
+- MID
+- BOT
+- SUP
+
+## Series Result Filter
+The final output only includes best-of-3 style results:
+
+- 2-0
+- 2-1
+- 1-2
+- 0-2
+
+## League Filter
+The source CTE filters to:
+
+- LPL
+- LCK
+
+## What Uses This Data
+The header says this is required by a Bayesian population script.
+
+Likely downstream usage:
+- population of dbo.lol_bayes_matchup_training
+- Bayesian matchup training
+- lane/player edge calculations by series
+- future result probability modeling
+
+## Run Frequency
+This is a view creation file.
+
+Run only when:
+- setting up the database
+- changing the source table
+- changing the standardized logic
+
+It is not a daily refresh file.
+
+## Suggested Command / Execution
+Run in SQL Server Management Studio or a SQL runner after replacing the placeholder table.
+
+## Required Before Running
+Before this can run successfully, replace:
+
+dbo.YOUR_RAW_SERIES_PLAYER_TABLE_HERE
+
+with a real table or view.
+
+Potential real sources could be:
+- a player-series profile table
+- an aggregation from dbo.fact_lol_player_game
+- an aggregation from Oracle Elixir staging
+- another historical player series table
+
+## Health Checks
+
+Check view exists:
+SELECT
+    OBJECT_ID('dbo.vw_lol_series_player_stats', 'V') AS object_id;
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_series_player_stats;
+
+Check rows by league/season:
+SELECT
+    season,
+    league,
+    COUNT(*) AS player_series_rows,
+    COUNT(DISTINCT series_id) AS series_count,
+    COUNT(DISTINCT player_name) AS players
+FROM dbo.vw_lol_series_player_stats
+GROUP BY season, league
+ORDER BY season DESC, league;
+
+Check expected positions:
+SELECT
+    position,
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_series_player_stats
+GROUP BY position
+ORDER BY position;
+
+Check expected 10 player rows per series:
+SELECT
+    series_id,
+    COUNT(*) AS player_rows,
+    COUNT(DISTINCT teamname) AS teams,
+    COUNT(DISTINCT position) AS positions
+FROM dbo.vw_lol_series_player_stats
+GROUP BY series_id
+HAVING COUNT(*) <> 10
+ORDER BY player_rows;
+
+## Important Risk Areas
+
+### Risk 1: Template placeholder
+This file will fail or be invalid until dbo.YOUR_RAW_SERIES_PLAYER_TABLE_HERE is replaced.
+
+### Risk 2: Source must be series-level
+The source must already be aggregated to series level. If it is game-level, the view may duplicate data unless aggregation is added.
+
+### Risk 3: DK points quality
+Downstream Bayesian logic depends heavily on dk_points. Make sure it uses the same DK scoring logic expected elsewhere.
+
+### Risk 4: No team/opponent mapping logic
+The view expects teamname and opponent_teamname to already exist.
+
+### Risk 5: Only LPL/LCK and BO3 paths
+This is intended for your LPL/LCK DK workflow and excludes other leagues and formats.
+
+## Recommended Future Enhancements
+- Replace placeholder with the real source.
+- Add comments naming the final source table.
+- Add source freshness columns if available.
+- Add a validation query section at the bottom.
+- Consider creating the player-series aggregation directly from dbo.fact_lol_player_game if that becomes the canonical source.
+
+## System Flow
+Intended flow:
+
+raw or historical player-series source
+    -> dbo.vw_lol_series_player_stats
+    -> Bayesian population script
+    -> dbo.lol_bayes_matchup_training
+    -> Bayesian matchup modeling
+
+## Documentation Status
+Category: SQL template view
+Consumes: Placeholder source table
+Creates: dbo.vw_lol_series_player_stats
+Run frequency: Setup/change only
+Daily pre-lock required: No
+Daily post-results required: No
+Critical dependency: replacing placeholder source table
+Critical risk: not production-ready as written

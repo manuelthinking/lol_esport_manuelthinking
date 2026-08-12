@@ -1,0 +1,264 @@
+# SQL-33_create_vw_lol_matchup_lane_edge_summary_pit_v1
+
+## Source SQL File
+33_create_vw_lol_matchup_lane_edge_summary_pit_v1.sql
+
+## Purpose
+Creates a point-in-time team-level lane edge summary.
+
+In plain English:
+This view rolls up point-in-time lane edge rows into one row per target series/team/opponent. It summarizes whether a team had an edge across all lanes, carry lanes, and main carry lanes before the series happened.
+
+This is the PIT equivalent of the historical lane edge summary view.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_matchup_lane_edges_pit_v1
+
+Important:
+This source view was not included in this batch. It appears to be the missing file 32.
+
+## Data It Creates
+Creates one row per:
+
+target_series_id + team + opponent
+
+## Grain
+One row per team perspective per target series.
+
+A normal target series should produce two rows:
+- Team A perspective
+- Team B perspective
+
+## Main Logic
+
+### lane_edges CTE
+Reads point-in-time lane edge rows.
+
+Expected fields:
+- model_version
+- target_series_id
+- game_date
+- league
+- season
+- team
+- opponent
+- lane
+- lane_power_score
+- opponent_lane_power_score
+- lane_power_edge
+- lane_power_tier
+- opponent_lane_power_tier
+- lane_edge_tier
+- prior_games_played
+- opponent_prior_games_played
+
+### summary CTE
+Aggregates lane rows into a team-level summary.
+
+Calculates:
+- lane_rows
+- rated_lane_rows
+- top_lane_edge
+- jng_lane_edge
+- mid_lane_edge
+- adc_lane_edge
+- sup_lane_edge
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- clear_edge_lanes
+- clear_disadvantage_lanes
+- positive_edge_lanes
+- negative_edge_lanes
+- positive_carry_edge_lanes
+- negative_carry_edge_lanes
+- opponent_neutral_or_better_lanes
+- opponent_neutral_or_better_carry_lanes
+- min_team_prior_games
+- min_opponent_prior_games
+- avg_team_prior_games
+- avg_opponent_prior_games
+
+## Carry Lane Definitions
+carry_lane_edge includes:
+- JNG
+- MID
+- ADC
+
+main_carry_lane_edge includes:
+- MID
+- ADC
+
+secondary_lane_edge includes:
+- TOP
+- SUP
+
+## Tier Logic
+
+### total_lane_edge_tier
+- rated_lane_rows < 3 -> Thin PIT Rating
+- total_lane_edge >= 50 -> Massive Overall Lane Edge
+- total_lane_edge >= 25 -> Strong Overall Lane Edge
+- total_lane_edge >= 10 -> Moderate Overall Lane Edge
+- total_lane_edge > -10 -> Mostly Even Overall
+- total_lane_edge > -25 -> Moderate Overall Lane Disadvantage
+- total_lane_edge > -50 -> Strong Overall Lane Disadvantage
+- else -> Massive Overall Lane Disadvantage
+
+### carry_lane_edge_tier
+- rated_lane_rows < 3 -> Thin PIT Rating
+- carry_lane_edge >= 30 -> Massive Carry Lane Edge
+- carry_lane_edge >= 15 -> Strong Carry Lane Edge
+- carry_lane_edge >= 5 -> Moderate Carry Lane Edge
+- carry_lane_edge > -5 -> Mostly Even Carry Lanes
+- carry_lane_edge > -15 -> Moderate Carry Lane Disadvantage
+- carry_lane_edge > -30 -> Strong Carry Lane Disadvantage
+- else -> Massive Carry Lane Disadvantage
+
+## Output Columns
+- model_version
+- target_series_id
+- game_date
+- league
+- season
+- team
+- opponent
+- lane_rows
+- rated_lane_rows
+- top_lane_edge
+- jng_lane_edge
+- mid_lane_edge
+- adc_lane_edge
+- sup_lane_edge
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- clear_edge_lanes
+- clear_disadvantage_lanes
+- positive_edge_lanes
+- negative_edge_lanes
+- positive_carry_edge_lanes
+- negative_carry_edge_lanes
+- opponent_neutral_or_better_lanes
+- opponent_neutral_or_better_carry_lanes
+- min_team_prior_games
+- min_opponent_prior_games
+- avg_team_prior_games
+- avg_opponent_prior_games
+- total_lane_edge_tier
+- carry_lane_edge_tier
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+
+Later downstream:
+- dbo.vw_lol_bayes_lane_power_backtest_summary_pit_v1
+- model validation / PIT lane-power backtest
+
+## Run Frequency
+Run when creating or changing the SQL view definition.
+
+Because this is a view, it updates automatically when the missing upstream lane edge PIT view updates.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_matchup_lane_edges_pit_v1
+
+Likely source chain:
+- dbo.vw_lol_player_lane_power_rating_pit_v1
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+- a missing file 32 that creates dbo.vw_lol_matchup_lane_edges_pit_v1
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_matchup_lane_edge_summary_pit_v1;
+
+Check two rows per target series:
+SELECT
+    target_series_id,
+    COUNT(*) AS team_rows,
+    COUNT(DISTINCT team) AS teams
+FROM dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+GROUP BY target_series_id
+HAVING COUNT(*) <> 2
+ORDER BY team_rows;
+
+Check lane completeness:
+SELECT
+    lane_rows,
+    rated_lane_rows,
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+GROUP BY lane_rows, rated_lane_rows
+ORDER BY lane_rows, rated_lane_rows;
+
+Check thin PIT rows:
+SELECT TOP 100
+    game_date,
+    league,
+    team,
+    opponent,
+    lane_rows,
+    rated_lane_rows,
+    total_lane_edge_tier,
+    carry_lane_edge_tier,
+    min_team_prior_games,
+    min_opponent_prior_games
+FROM dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+WHERE rated_lane_rows < 3
+ORDER BY game_date DESC;
+
+## Important Risk Areas
+
+### Risk 1: Missing upstream file 32
+This view depends on dbo.vw_lol_matchup_lane_edges_pit_v1, but that SQL file was not included in this batch.
+
+### Risk 2: Thin PIT ratings
+If fewer than 3 rated lanes are available, the view labels the row as Thin PIT Rating.
+
+### Risk 3: Missing lane rows affect totals
+If the upstream edge view lacks players/ratings, total and carry edges can be incomplete.
+
+### Risk 4: Team perspective rows
+Rows are team-side, not one row per match.
+
+### Risk 5: Historical PIT only
+This is built for historical backtesting, not directly for upcoming slate analysis.
+
+## Recommended Future Enhancements
+- Add/document file 32 for dbo.vw_lol_matchup_lane_edges_pit_v1.
+- Add lane completeness checks to Command Center.
+- Add one-row-per-match summary if needed.
+- Add live-slate PIT-like summary using current starters.
+- Consider role-weighting total_lane_edge instead of simple sum.
+
+## System Flow
+dbo.vw_lol_player_lane_power_rating_pit_v1
+    -> dbo.vw_lol_matchup_lane_edges_pit_v1
+    -> dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+    -> dbo.vw_lol_bayes_lane_power_backtest_pit_v1
+
+## Documentation Status
+Category: SQL point-in-time lane edge summary view
+Consumes: dbo.vw_lol_matchup_lane_edges_pit_v1
+Creates: dbo.vw_lol_matchup_lane_edge_summary_pit_v1
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: missing file 32 / PIT lane edge view
+Critical risk: missing upstream view, incomplete lane rows, team-side interpretation

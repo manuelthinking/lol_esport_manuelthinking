@@ -1,0 +1,211 @@
+# SQL-42_create_vw_lol_team_overview_lane_power_signal_v1
+
+## Source SQL File
+42_create_vw_lol_team_overview_lane_power_signal_v1.sql
+
+## Purpose
+Creates an app-facing Team Overview lane-power signal view.
+
+In plain English:
+This view takes the point-in-time Bayes/Lane Power backtest snapshot and turns it into a simpler signal that the Team Overview page can display. It adds a lane-power win percentage modifier, adjusted win percentage, DFS signal label, and DFS note.
+
+This is a presentation/interpretation layer on top of the PIT Bayes/Lane Power backtest snapshot.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_team_overview_lane_power_signal_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_bayes_lane_power_backtest_pit_snapshot
+
+## Data It Creates
+Creates one row per team perspective from the PIT backtest snapshot.
+
+## Grain
+One row per:
+
+target_series_id + team + opponent
+
+This is team-perspective grain, not one row per match.
+
+## Main Fields Passed Through
+
+### Series / Team Context
+- target_series_id
+- game_date
+- league
+- season
+- team
+- opponent
+- actual_series_result
+- actual_won_series
+
+### Bayes
+- bayes_win_pct
+- opponent_bayes_win_pct
+- smoothed_strength_gap
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+
+### Lane Power
+- lane_rows
+- rated_lane_rows
+- top_lane_edge
+- jng_lane_edge
+- mid_lane_edge
+- adc_lane_edge
+- sup_lane_edge
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- opponent_neutral_or_better_lanes
+- opponent_neutral_or_better_carry_lanes
+- total_lane_edge_tier
+- carry_lane_edge_tier
+
+### Signals / Flags
+- bayes_favorite_status
+- lane_favorite_status
+- upset_resistance_score
+- upset_resistance_tier
+- bayes_lane_alignment_label
+- bayes_overconfidence_warning_flag
+- bayes_possible_upset_signal_flag
+- lane_power_breaks_bayes_tie_flag
+- favorite_stomp_support_flag
+
+## New Fields Created
+
+### lane_power_win_pct_modifier
+Adds or subtracts from Bayes win percentage based on carry lane strength.
+
+Logic:
+- thin data -> 0.00
+- Bayes favorite and carry_lane_edge >= 20 -> +0.05
+- Bayes favorite and carry_lane_edge <= -15 -> -0.10
+- Bayes toss-up and carry_lane_edge >= 20 -> +0.05
+- Bayes toss-up and carry_lane_edge <= -20 -> -0.05
+- else -> 0.00
+
+### adjusted_win_pct
+bayes_win_pct + lane_power_win_pct_modifier, clamped between:
+- 0.05 minimum
+- 0.95 maximum
+
+### dfs_lane_power_signal
+Labels include:
+- Thin PIT Data
+- Bayes Favorite + Strong Carry Support
+- Bayes Favorite + Major Carry Concern
+- Toss-Up + Lane Power Lean
+- Toss-Up + Lane Power Fade
+- Underdog Has Resistance
+- Standard Bayes Read
+
+### dfs_lane_power_note
+Human-readable explanation for the Team Overview page.
+
+Examples:
+- upgrade favorite confidence
+- downgrade favorite confidence
+- not enough prior lane data
+- underdog is not dead
+- no major adjustment
+
+## What Uses This Data
+Likely downstream:
+- app_lol_team_overview.py
+- Team Overview Lane Power section
+- Command Center lane-power diagnostics
+- manual scenario selection
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because it is a view, it updates automatically when dbo.lol_bayes_lane_power_backtest_pit_snapshot is refreshed.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_lane_power_backtest_pit_snapshot
+
+That table is populated by:
+- 40_refresh_lol_bayes_lane_power_backtest_pit_snapshot.sql
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_team_overview_lane_power_signal_v1;
+
+Check signal distribution:
+SELECT
+    dfs_lane_power_signal,
+    COUNT(*) AS rows_count,
+    AVG(bayes_win_pct) AS avg_bayes_win_pct,
+    AVG(adjusted_win_pct) AS avg_adjusted_win_pct,
+    AVG(lane_power_win_pct_modifier) AS avg_modifier
+FROM dbo.vw_lol_team_overview_lane_power_signal_v1
+GROUP BY dfs_lane_power_signal
+ORDER BY rows_count DESC;
+
+Check latest rows:
+SELECT TOP 100
+    game_date,
+    league,
+    team,
+    opponent,
+    bayes_win_pct,
+    lane_power_win_pct_modifier,
+    adjusted_win_pct,
+    carry_lane_edge,
+    dfs_lane_power_signal,
+    dfs_lane_power_note
+FROM dbo.vw_lol_team_overview_lane_power_signal_v1
+ORDER BY game_date DESC, league, team;
+
+## Important Risk Areas
+
+### Risk 1: Reads snapshot table, not live slate
+Despite being Team Overview-facing, this view reads the PIT backtest snapshot table. It is historical/backtest-oriented unless the snapshot contains current-slate rows.
+
+### Risk 2: Snapshot must be refreshed
+If file 40 has not been run after upstream changes, this view can be stale.
+
+### Risk 3: Modifier rules are heuristic
+The win pct adjustment is rule-based, not trained. It should be treated as a decision aid, not truth.
+
+### Risk 4: Bayes probability scale
+This view assumes bayes_win_pct is a decimal between 0 and 1.
+
+### Risk 5: Team-perspective rows
+There are two rows per matchup. Apps need to avoid double-counting when summarizing.
+
+## Recommended Future Enhancements
+- Rename or document clearly as historical/PIT snapshot signal if not used for live slates.
+- Add a true current-slate version that uses DK slate teams, manual starters, and live Bayes.
+- Add calibration/backtest results for each modifier rule.
+- Add app health check for stale snapshot.
+- Add match-level view if needed for UI simplicity.
+
+## System Flow
+dbo.lol_bayes_lane_power_backtest_pit_snapshot
+    -> dbo.vw_lol_team_overview_lane_power_signal_v1
+    -> Team Overview Lane Power display
+
+## Documentation Status
+Category: SQL app-facing lane-power signal view
+Consumes: dbo.lol_bayes_lane_power_backtest_pit_snapshot
+Creates: dbo.vw_lol_team_overview_lane_power_signal_v1
+Run frequency: Setup/change only; view updates automatically from snapshot
+Daily pre-lock required: No, unless connected to current-slate workflow
+Daily post-results required: Source snapshot refresh only
+Critical dependency: PIT backtest snapshot table
+Critical risk: historical snapshot not live slate, stale snapshot, heuristic modifiers

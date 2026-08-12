@@ -1,0 +1,274 @@
+# SQL-11_create_lol_bayes_prediction_tracking
+
+## Source SQL File
+11_create_lol_bayes_prediction_tracking.sql
+
+## Purpose
+Creates a table for saving Bayesian model predictions before results are known.
+
+In plain English:
+This table is meant to store the model's pre-result prediction for each slate matchup so you can evaluate it later against actual results.
+
+This is important because it prevents backfitting. You save the prediction before games happen, then later compare it to what actually happened.
+
+## SQL Object Created
+Creates:
+
+dbo.lol_bayes_prediction_tracking
+
+This is a physical table.
+
+## Data It Consumes
+This SQL file does not consume data directly.
+
+It only creates:
+- table
+- unique index
+- lookup index
+- accuracy review index
+
+A separate process is needed to insert predictions before lock and update actual results after completion.
+
+## Data It Creates / Updates
+
+### Creates Table
+dbo.lol_bayes_prediction_tracking
+
+Only if it does not already exist.
+
+### Creates Unique Index
+ux_lol_bayes_prediction_tracking_slate_team
+
+### Creates Lookup Index
+ix_lol_bayes_prediction_tracking_slate
+
+### Creates Accuracy Review Index
+ix_lol_bayes_prediction_tracking_accuracy
+
+## Grain
+One row per:
+
+slate / matchup / team prediction
+
+Example:
+BLG vs TES creates two rows:
+- BLG prediction row
+- TES prediction row
+
+## Main Columns
+
+### Slate Context
+- slate_date
+- slate_name
+- game_info
+
+### Team Context
+- league
+- team_abbrev
+- teamname
+- opponent_abbrev
+- opponent_teamname
+
+### Model Structure / Context
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+- mid_lane_matchup_bucket
+- bot_lane_matchup_bucket
+- sup_lane_matchup_bucket
+- sample_type
+- similar_sample
+
+### Bayesian Probabilities
+- bayes_win_pct
+- bayes_p_2_0
+- bayes_p_2_1
+- bayes_p_1_2
+- bayes_p_0_2
+
+### Suggested Prediction
+- suggested_path
+- suggested_winner_teamname
+- suggested_winner_abbrev
+- suggested_match_score
+
+### Human Notes
+- dfs_note
+- scenario_note
+
+### Actual Result Fields
+Filled later after games complete:
+- actual_winner_teamname
+- actual_winner_abbrev
+- actual_series_result
+- actual_team_result
+- winner_correct
+- score_correct
+- path_correct
+
+### Metadata
+- prediction_source
+- locked_before_results
+- notes
+- created_at
+- updated_at
+
+## Indexes
+
+### Unique Index
+Prevents duplicate saves for the same slate/team prediction.
+
+Columns:
+- slate_date
+- slate_name
+- game_info
+- teamname
+- opponent_teamname
+- prediction_source
+
+### Slate Lookup Index
+Supports reviewing one slate quickly.
+
+Columns:
+- slate_date
+- slate_name
+- game_info
+
+### Accuracy Review Index
+Supports later accuracy analysis.
+
+Columns:
+- slate_date
+- winner_correct
+- score_correct
+- sample_type
+
+## What Uses This Data
+Intended downstream:
+- Bayes prediction tracking
+- Bayes accuracy review
+- Command Center Bayes review
+- future backtest dashboard
+- model tuning
+- scenario confidence calibration
+
+It should eventually connect with:
+- app_lol_team_overview suggested scenarios
+- a save-predictions script or app button
+- an update-actuals script after games complete
+
+## Run Frequency
+Run once during setup or when changing table/index definitions.
+
+Do not need to run daily.
+
+Daily usage should come from separate insert/update scripts:
+- save predictions before lock
+- update actual results after completion
+
+## Required Before Running
+No upstream data required for table creation.
+
+## Required After Running
+Create or add:
+1. Save prediction process before lock.
+2. Update actual results process after results are loaded.
+3. Review query/view for accuracy.
+
+## Health Checks
+
+Check table exists:
+SELECT
+    OBJECT_ID('dbo.lol_bayes_prediction_tracking', 'U') AS object_id;
+
+Check row count:
+SELECT
+    COUNT(*) AS prediction_rows
+FROM dbo.lol_bayes_prediction_tracking;
+
+Check predictions by slate:
+SELECT
+    slate_date,
+    slate_name,
+    prediction_source,
+    COUNT(*) AS prediction_rows,
+    COUNT(DISTINCT game_info) AS matchups,
+    MIN(created_at) AS first_created_at,
+    MAX(created_at) AS last_created_at
+FROM dbo.lol_bayes_prediction_tracking
+GROUP BY slate_date, slate_name, prediction_source
+ORDER BY slate_date DESC, slate_name;
+
+Check unlocked/backfilled risk:
+SELECT TOP 100
+    slate_date,
+    slate_name,
+    game_info,
+    teamname,
+    opponent_teamname,
+    prediction_source,
+    locked_before_results,
+    created_at,
+    actual_series_result,
+    winner_correct,
+    score_correct,
+    path_correct
+FROM dbo.lol_bayes_prediction_tracking
+ORDER BY slate_date DESC, game_info, teamname;
+
+Check accuracy:
+SELECT
+    prediction_source,
+    sample_type,
+    COUNT(*) AS evaluated_rows,
+    AVG(CAST(winner_correct AS FLOAT)) AS winner_accuracy,
+    AVG(CAST(score_correct AS FLOAT)) AS score_accuracy,
+    AVG(CAST(path_correct AS FLOAT)) AS path_accuracy
+FROM dbo.lol_bayes_prediction_tracking
+WHERE winner_correct IS NOT NULL
+GROUP BY prediction_source, sample_type
+ORDER BY evaluated_rows DESC;
+
+## Important Risk Areas
+
+### Risk 1: Table creation only
+This file does not save predictions or update results. Those processes still need to be built.
+
+### Risk 2: Must be populated before results
+The value of this table depends on predictions being saved before the matches happen.
+
+### Risk 3: Unique index uses teamname/opponent_teamname
+If team naming changes, duplicate prevention may not behave as intended.
+
+### Risk 4: game_info can be nullable in unique index
+SQL Server unique indexes allow multiple NULL values in some contexts depending on column combinations. If game_info/teamname values are null, duplicate protection may be weaker than expected.
+
+### Risk 5: Actual result update process missing
+Without a post-results updater, accuracy fields remain null.
+
+## Recommended Future Enhancements
+- Build save_bayes_predictions.py or an Action Engine job.
+- Add a Command Center button to save pre-lock Bayes predictions.
+- Add update_bayes_prediction_actuals.sql after results are loaded.
+- Add view: dbo.vw_lol_bayes_prediction_tracking_accuracy.
+- Add created_before_match_start validation if match start times are available.
+- Consider using team abbreviations plus full names in unique key for stronger matching.
+
+## System Flow
+app_lol_team_overview Bayesian Matchup Read
+    -> save predictions before lock
+    -> dbo.lol_bayes_prediction_tracking
+    -> ingest completed results
+    -> update actual result fields
+    -> prediction accuracy review
+    -> Bayes model tuning
+
+## Documentation Status
+Category: SQL table creation
+Consumes: No data directly
+Creates: dbo.lol_bayes_prediction_tracking
+Run frequency: Setup/change only
+Daily pre-lock required: Not this file, but saving predictions should be pre-lock
+Daily post-results required: Not this file, but updating actuals should be post-results
+Critical dependency: future save/update prediction processes
+Critical risk: table exists but no population/update workflow yet

@@ -1,0 +1,166 @@
+# SQL-30_create_vw_lol_lane_power_warning_backtest_v1
+
+## Source SQL File
+30_create_vw_lol_lane_power_warning_backtest_v1.sql
+
+## Purpose
+Creates a focused warning-type backtest summary for the lane-power/Bayes warning flags.
+
+In plain English:
+This view groups historical rows into warning types, then compares Bayes winner accuracy and Lane Power winner accuracy within each warning bucket.
+
+This is meant to answer:
+"When the system raises a specific warning, how often is Bayes right versus Lane Power?"
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_lane_power_warning_backtest_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_bayes_lane_power_comparison_snapshot
+
+Important:
+This reads the snapshot table, not the live comparison view.
+
+## Data It Creates
+Creates one row per:
+
+warning_type
+
+## Grain
+One row per warning bucket.
+
+Warning buckets:
+- Bayes Overconfidence Warning
+- Possible Upset Signal
+- Lane Power Breaks Bayes Tie
+- No Special Warning
+
+## Main Filter
+The base CTE filters to:
+
+actual_won_series IS NOT NULL
+
+So only evaluated rows are included.
+
+## Warning Type Logic
+Priority order:
+
+1. If bayes_overconfidence_warning_flag = 1
+   -> Bayes Overconfidence Warning
+
+2. Else if bayes_possible_upset_signal_flag = 1
+   -> Possible Upset Signal
+
+3. Else if lane_power_breaks_bayes_tie_flag = 1
+   -> Lane Power Breaks Bayes Tie
+
+4. Else
+   -> No Special Warning
+
+Important:
+Because this is a priority CASE statement, if multiple flags are 1 on the same row, only the first matching warning type is assigned.
+
+## Metrics Created
+For each warning type:
+
+- rows_count
+- actual_team_win_rate
+- bayes_winner_accuracy
+- lane_power_winner_accuracy
+- bayes_correct_count
+- bayes_wrong_count
+- lane_power_correct_count
+- lane_power_wrong_count
+- avg_bayes_win_pct
+- avg_total_lane_edge
+- avg_carry_lane_edge
+- avg_upset_resistance_score
+
+## What Uses This Data
+Likely downstream:
+- Command Center warning review
+- lane-power model validation
+- Bayes overconfidence review
+- scenario-rule tuning
+- future Team Overview warnings
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically from the snapshot table.
+
+The snapshot must be refreshed with file 27 to reflect current upstream data.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_lane_power_comparison_snapshot
+
+## Health Checks
+
+View row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_lane_power_warning_backtest_v1;
+
+Show warning performance:
+SELECT
+    *
+FROM dbo.vw_lol_lane_power_warning_backtest_v1
+ORDER BY rows_count DESC;
+
+Check warning flags directly:
+SELECT
+    bayes_overconfidence_warning_flag,
+    bayes_possible_upset_signal_flag,
+    lane_power_breaks_bayes_tie_flag,
+    COUNT(*) AS rows_count
+FROM dbo.lol_bayes_lane_power_comparison_snapshot
+WHERE actual_won_series IS NOT NULL
+GROUP BY
+    bayes_overconfidence_warning_flag,
+    bayes_possible_upset_signal_flag,
+    lane_power_breaks_bayes_tie_flag
+ORDER BY rows_count DESC;
+
+## Important Risk Areas
+
+### Risk 1: Priority warning assignment
+Rows with multiple flags only appear under the first matching warning type. That may be fine, but it should be intentional.
+
+### Risk 2: Snapshot must be refreshed
+Like file 29, this view can be stale if the snapshot table was not refreshed.
+
+### Risk 3: Team-side interpretation
+actual_team_win_rate and winner accuracy are based on team-perspective rows.
+
+### Risk 4: No league/date grouping
+This is an overall warning summary only. LPL and LCK may behave differently.
+
+## Recommended Future Enhancements
+- Add league-level version.
+- Add separate non-priority flag summary so overlapping warnings are visible.
+- Add date range or season filters.
+- Add minimum sample warning.
+- Add match-level version if needed.
+- Add these warning summaries to Command Center.
+
+## System Flow
+dbo.lol_bayes_lane_power_comparison_snapshot
+    -> dbo.vw_lol_lane_power_warning_backtest_v1
+    -> warning rule validation / Command Center review
+
+## Documentation Status
+Category: SQL warning backtest summary view
+Consumes: dbo.lol_bayes_lane_power_comparison_snapshot
+Creates: dbo.vw_lol_lane_power_warning_backtest_v1
+Run frequency: Setup/change only; view updates automatically from snapshot
+Daily pre-lock required: No
+Daily post-results required: Refresh snapshot if new data exists
+Critical dependency: refreshed snapshot table
+Critical risk: priority warning assignment, stale snapshot, team-side interpretation

@@ -1,0 +1,307 @@
+# SQL-43_create_vw_lol_slate_lane_power_signal_live_v1
+
+## Source SQL File
+43_create_vw_lol_slate_lane_power_signal_live_v1.sql
+
+## Purpose
+Creates the live/current-slate lane-power signal view.
+
+In plain English:
+This view reads the current DraftKings slate, picks one player per team/lane, joins those players to historical lane-power ratings, compares both sides of each matchup by lane, then summarizes the lane-power edge for each team.
+
+This is the live-slate counterpart to the historical PIT lane-power backtest work.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_slate_lane_power_signal_live_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.dk_lol_slate_player
+
+### Source Table
+- dbo.lol_player_lane_ratings
+
+### Source View
+- dbo.vw_lol_player_lane_power_rating_v1
+
+## Data It Creates
+Creates one row per:
+
+slate + matchup + team + opponent
+
+This is team-perspective grain.
+
+## Main Filters
+Excludes DK rows where:
+- dk_position IN ('CPT', 'CAPTAIN', 'TEAM')
+- roster_position IN ('CPT', 'CAPTAIN')
+
+Requires:
+- team_abbrev IS NOT NULL
+- game_info IS NOT NULL
+
+Only keeps lanes:
+- TOP
+- JNG
+- MID
+- ADC
+- SUP
+
+Important:
+latest_rating filters lol_player_lane_ratings to season = 2026.
+
+## Main Logic
+
+### latest_rating CTE
+Gets the latest/highest quality lane rating row by:
+- player name
+- position
+
+Order:
+- season DESC
+- games DESC
+- rating_score DESC
+
+Filters:
+- season = 2026
+
+### latest_lane_power CTE
+Gets latest lane-power row by:
+- league
+- player name
+- lane
+
+Order:
+- games_played DESC
+- lane_power_score DESC
+
+### slate_players_raw CTE
+Reads DK slate player rows and maps DK positions into lanes:
+- bot / adc -> ADC
+- jng / jun / jungle -> JNG
+- else UPPER(dk_position)
+
+Joins to latest_rating to get:
+- league
+- rating_team_name
+- rating_player_name
+
+### picked_players CTE
+If multiple players exist for the same slate/team/lane, picks one using:
+- salary DESC
+- dk_player_name
+
+This is a key operational assumption.
+
+### team_lanes CTE
+Joins selected slate players to lane-power ratings.
+
+Joins by:
+- league
+- lane
+- player name
+
+### lane_edges CTE
+Pairs the team’s lane player against the opponent’s lane player in the same:
+- slate_date
+- slate_name
+- game_info
+- lane
+
+Calculates:
+- lane_power_edge = team lane_power_score - opponent lane_power_score
+
+### summary CTE
+Aggregates lane edges into one row per team/opponent matchup.
+
+Creates:
+- lane_rows
+- rated_lane_rows
+- lane edges by role
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- positive/negative carry edge lanes
+- opponent neutral-or-better lane counts
+
+## Output Columns
+
+### Identity
+- signal_version
+- game_date
+- slate_name
+- game_info
+- league
+- team
+- opponent
+- team_full_name
+- opponent_full_name
+
+### Bayes Placeholder Fields
+- bayes_win_pct = NULL
+- adjusted_win_pct = NULL
+
+Important:
+This view does not currently join to live Bayes probabilities.
+
+### Lane Summary
+- lane_rows
+- rated_lane_rows
+- top_lane_edge
+- jng_lane_edge
+- mid_lane_edge
+- adc_lane_edge
+- sup_lane_edge
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- opponent_neutral_or_better_lanes
+- opponent_neutral_or_better_carry_lanes
+
+### Tiers / Signals
+- total_lane_edge_tier
+- carry_lane_edge_tier
+- lane_power_win_pct_modifier
+- dfs_lane_power_signal
+- dfs_lane_power_note
+
+## Tier Logic
+
+### total_lane_edge_tier
+- rated_lane_rows < 3 -> Thin Live Rating
+- total_lane_edge >= 50 -> Massive Overall Lane Edge
+- total_lane_edge >= 25 -> Strong Overall Lane Edge
+- total_lane_edge >= 10 -> Moderate Overall Lane Edge
+- total_lane_edge > -10 -> Mostly Even Overall
+- total_lane_edge > -25 -> Moderate Overall Lane Disadvantage
+- total_lane_edge > -50 -> Strong Overall Lane Disadvantage
+- else -> Massive Overall Lane Disadvantage
+
+### carry_lane_edge_tier
+- rated_lane_rows < 3 -> Thin Live Rating
+- carry_lane_edge >= 30 -> Massive Carry Lane Edge
+- carry_lane_edge >= 20 -> Strong Carry Lane Edge
+- carry_lane_edge >= 5 -> Moderate Carry Lane Edge
+- carry_lane_edge > -5 -> Mostly Even Carry Lanes
+- carry_lane_edge > -15 -> Carry Lane Concern
+- else -> Major Carry Lane Concern
+
+## Lane Power Modifier Logic
+- rated_lane_rows < 3 -> 0.00
+- carry_lane_edge >= 20 -> +0.05
+- carry_lane_edge <= -15 -> -0.10
+- else -> 0.00
+
+## What Uses This Data
+Known downstream:
+- app_lol_team_overview.py Lane Power section
+- app_lol_command_center.py Data Health / Lane Power checks
+
+Potential downstream:
+- lineup builder scenario support
+- live slate decision review
+- Command Center exceptions
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because it is a view, it updates automatically when DK slate and lane-power source data changes.
+
+## Required Before Running
+Requires:
+- dbo.dk_lol_slate_player
+- dbo.lol_player_lane_ratings
+- dbo.vw_lol_player_lane_power_rating_v1
+
+## Health Checks
+
+Check latest rows:
+SELECT TOP 100
+    game_date,
+    slate_name,
+    game_info,
+    league,
+    team,
+    opponent,
+    lane_rows,
+    rated_lane_rows,
+    total_lane_edge,
+    carry_lane_edge,
+    dfs_lane_power_signal,
+    dfs_lane_power_note
+FROM dbo.vw_lol_slate_lane_power_signal_live_v1
+ORDER BY game_date DESC, slate_name, game_info, team;
+
+Check rated lane coverage:
+SELECT
+    game_date,
+    slate_name,
+    COUNT(*) AS team_rows,
+    AVG(CAST(rated_lane_rows AS FLOAT)) AS avg_rated_lanes,
+    SUM(CASE WHEN rated_lane_rows < 3 THEN 1 ELSE 0 END) AS thin_rows
+FROM dbo.vw_lol_slate_lane_power_signal_live_v1
+GROUP BY game_date, slate_name
+ORDER BY game_date DESC, slate_name;
+
+Check signal distribution:
+SELECT
+    game_date,
+    slate_name,
+    dfs_lane_power_signal,
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_slate_lane_power_signal_live_v1
+GROUP BY game_date, slate_name, dfs_lane_power_signal
+ORDER BY game_date DESC, slate_name, rows_count DESC;
+
+## Important Risk Areas
+
+### Risk 1: Picks one player per team/lane by salary
+If DK includes multiple players for a lane, the view picks the highest salary. This may not always equal the true starter.
+
+### Risk 2: Does not use manual_starters.csv or starter history
+This is a major operational note. The view uses DK slate rows and salary ranking, not manual starter decisions.
+
+### Risk 3: Hard-coded rating season = 2026
+The latest_rating CTE filters to season = 2026.
+
+### Risk 4: Bayes fields are NULL
+The view includes bayes_win_pct and adjusted_win_pct as NULL placeholders. It is a lane-power live view, not a full Bayes/lane combined live view.
+
+### Risk 5: Player-name matching
+Lane-power rating join is by player name and lane. Name mismatches can create missing ratings and thin rows.
+
+### Risk 6: League comes from player ratings
+If latest_rating does not match a player, league may be NULL, which can break lane-power matching.
+
+## Recommended Future Enhancements
+- Join to manual starters or starter history instead of picking by salary.
+- Add live Bayes join so bayes_win_pct and adjusted_win_pct are populated.
+- Remove/parameterize hard-coded 2026.
+- Add team name map support.
+- Add missing rating diagnostics by player/team/lane.
+- Add slate-specific validation that each team has five lanes.
+- Consider writing a live slate lane-power snapshot table for pre-lock review.
+
+## System Flow
+dbo.dk_lol_slate_player
+dbo.lol_player_lane_ratings
+dbo.vw_lol_player_lane_power_rating_v1
+    -> dbo.vw_lol_slate_lane_power_signal_live_v1
+    -> Team Overview / Command Center live lane-power review
+
+## Documentation Status
+Category: SQL live slate lane-power view
+Consumes: DK slate table, player lane ratings, lane-power rating view
+Creates: dbo.vw_lol_slate_lane_power_signal_live_v1
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: Source data current, yes this view is used pre-lock
+Daily post-results required: No
+Critical dependency: DK slate player table and lane-power ratings
+Critical risk: highest-salary starter assumption, no manual starter integration, hard-coded 2026, Bayes placeholder fields

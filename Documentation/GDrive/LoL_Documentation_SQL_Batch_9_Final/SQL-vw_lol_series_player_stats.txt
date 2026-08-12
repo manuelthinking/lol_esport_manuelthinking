@@ -1,0 +1,214 @@
+# SQL-vw_lol_series_player_stats
+
+## Source SQL File
+vw_lol_series_player_stats
+
+## Purpose
+Creates the real player-series stats view used by the older Bayes training table population script.
+
+In plain English:
+This view connects completed series rows to their game IDs, joins those games to player-game facts, and aggregates each player's stats across the series. It produces one row per player per team per series.
+
+This appears to be the production version replacing the earlier template file 02_create_vw_lol_series_player_stats.sql.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_series_player_stats
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_team_series_results
+
+### Source Table
+- dbo.fact_lol_player_game
+
+## Data It Creates
+Creates one row per:
+
+series + team + player + position
+
+## Grain
+One row per player per series.
+
+A normal completed best-of-3 series should have up to:
+- 10 rows
+- 5 players per team
+
+## Main Logic
+
+### series_games CTE
+Reads dbo.lol_team_series_results and expands the gameids field using STRING_SPLIT.
+
+It normalizes separators:
+- pipe |
+- semicolon ;
+- comma ,
+- spaces removed
+
+Creates one row per:
+- series_id
+- teamname
+- game_id
+
+Filters:
+- league IN ('LPL', 'LCK')
+- series_result IN ('2-0', '2-1', '1-2', '0-2')
+- gameids IS NOT NULL
+- split game_id is not blank
+
+### player_series CTE
+Joins series games to dbo.fact_lol_player_game by:
+- pg.game_id = series game_id
+- pg.team_name = series teamname
+
+Aggregates player stats across the series.
+
+Position normalization:
+- bot / adc -> BOT
+- jungle / jng -> JNG
+- top -> TOP
+- mid -> MID
+- support / sup -> SUP
+
+Aggregated stats:
+- kills
+- deaths
+- assists
+- dk_points
+- cs
+- avg_dpm
+- avg_damage_share
+- avg_vision_score
+- avg_gold_diff_10
+- avg_xp_diff_10
+- avg_cs_diff_10
+
+## Output Columns
+- series_id
+- series_date
+- season
+- league
+- split
+- teamname
+- opponent_teamname
+- player_name
+- position
+- series_result
+- won_series
+- games_played
+- kills
+- deaths
+- assists
+- dk_points
+- cs
+- avg_dpm
+- avg_damage_share
+- avg_vision_score
+- avg_gold_diff_10
+- avg_xp_diff_10
+- avg_cs_diff_10
+
+## What Uses This Data
+Direct downstream:
+- lol_bayes_matchup_training.sql
+
+Potential downstream:
+- legacy Bayes training review
+- player-series analysis
+
+This file likely replaces or completes:
+- 02_create_vw_lol_series_player_stats.sql
+
+The earlier 02 file was a template referencing dbo.YOUR_RAW_SERIES_PLAYER_TABLE_HERE. This file uses the real source tables.
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because it is a view, it updates automatically when source tables update.
+
+## Required Before Running
+Requires:
+- dbo.lol_team_series_results
+- dbo.fact_lol_player_game
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_series_player_stats;
+
+Check rows by league/season:
+SELECT
+    season,
+    league,
+    COUNT(*) AS player_series_rows,
+    COUNT(DISTINCT series_id) AS series_count,
+    COUNT(DISTINCT player_name) AS players
+FROM dbo.vw_lol_series_player_stats
+GROUP BY season, league
+ORDER BY season DESC, league;
+
+Check expected positions:
+SELECT
+    position,
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_series_player_stats
+GROUP BY position
+ORDER BY position;
+
+Check series row counts:
+SELECT
+    series_id,
+    COUNT(*) AS player_rows,
+    COUNT(DISTINCT teamname) AS teams,
+    COUNT(DISTINCT position) AS positions
+FROM dbo.vw_lol_series_player_stats
+GROUP BY series_id
+HAVING COUNT(*) <> 10
+ORDER BY player_rows;
+
+## Important Risk Areas
+
+### Risk 1: Depends on gameids in lol_team_series_results
+If gameids is missing, malformed, or uses unexpected separators, player-series rows will be incomplete.
+
+### Risk 2: Team name matching
+The join to fact_lol_player_game requires team_name to match teamname after lower/trim. Team naming differences can drop rows.
+
+### Risk 3: DK points source
+Uses pg.dk_points from fact_lol_player_game. If that table uses placeholder DK scoring, this view inherits it.
+
+### Risk 4: View drops and recreates
+Uses DROP VIEW / CREATE VIEW instead of CREATE OR ALTER.
+
+### Risk 5: Replaces template but file naming is unnumbered
+This should probably replace the earlier file 02 or be renamed into the numbered SQL sequence.
+
+## Recommended Future Enhancements
+- Replace the old template 02 with this real implementation.
+- Rename as 02_create_vw_lol_series_player_stats.sql if it is the current source.
+- Use CREATE OR ALTER VIEW.
+- Add row count checks for series with fewer than 10 player rows.
+- Add team-name mapping if needed.
+
+## System Flow
+dbo.lol_team_series_results
+dbo.fact_lol_player_game
+    -> dbo.vw_lol_series_player_stats
+    -> lol_bayes_matchup_training.sql
+    -> dbo.lol_bayes_matchup_training
+
+## Documentation Status
+Category: SQL player-series stats view
+Consumes: dbo.lol_team_series_results, dbo.fact_lol_player_game
+Creates: dbo.vw_lol_series_player_stats
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No
+Daily post-results required: Source refresh only
+Critical dependency: gameids in team series results and player-game facts
+Critical risk: team-name matching, DK points quality, should replace earlier template file

@@ -1,0 +1,222 @@
+# SQL-05_create_vw_lol_team_strength_matchups
+
+## Source SQL File
+05_create_vw_lol_team_strength_matchups.sql
+
+## Purpose
+Creates a historical team-series matchup view that adds team strength and opponent strength buckets to each team-series result.
+
+In plain English:
+This view takes each historical team series row and labels the team and opponent as strong, neutral, weak, or unknown. It then creates matchup buckets like strong_vs_weak or neutral_vs_strong.
+
+This is an intermediate view for Bayesian strength matchup modeling.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_team_strength_matchups
+
+This is a view.
+
+## Data It Consumes
+
+### Source Tables / Views
+- dbo.lol_team_series_results
+- dbo.vw_lol_team_strength_bucket
+
+## Data It Creates
+Creates a view with one row per:
+
+team per historical series
+
+## Grain
+one row per team per historical series
+
+Fields:
+- series_id
+- teamname
+- opponent_teamname
+
+## Main Filters
+The base CTE filters to:
+
+- league IN ('LPL', 'LCK')
+- year = 2026
+- series_result IN ('2-0', '2-1', '1-2', '0-2')
+- teamname IS NOT NULL
+- opponent IS NOT NULL
+
+Important:
+This view is hard-coded to 2026.
+
+## Main Logic
+
+### Base CTE
+Reads historical series rows from dbo.lol_team_series_results.
+
+Pulls:
+- series identity
+- team/opponent
+- series result
+- win/loss
+- games played
+- DK fantasy totals
+- kills/deaths
+- game length
+
+### with_buckets CTE
+Joins the base team and opponent to dbo.vw_lol_team_strength_bucket.
+
+It creates:
+- team_strength_bucket
+- opponent_strength_bucket
+- team_smoothed_win_rate
+- opponent_smoothed_win_rate
+- team_series_count
+- opponent_series_count
+- team sample label
+- opponent sample label
+
+### Final SELECT
+Creates strength_matchup_bucket:
+
+team_strength_bucket + '_vs_' + opponent_strength_bucket
+
+Examples:
+- strong_vs_weak
+- weak_vs_strong
+- neutral_vs_neutral
+- unknown_vs_strong
+
+## Output Columns
+- series_id
+- league
+- season
+- series_date
+- teamname
+- opponent_teamname
+- series_result
+- won_series
+- games_played
+- wins
+- losses
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+- team_smoothed_win_rate
+- opponent_smoothed_win_rate
+- team_series_count
+- opponent_series_count
+- team_strength_sample_label
+- opponent_strength_sample_label
+- player_dk_fp_base
+- player_dk_fp_with_gnp
+- team_slot_dk_fp_base
+- team_slot_dk_fp_with_gnp
+- total_team_kills
+- total_team_deaths
+- avg_game_length_minutes
+- total_game_length_minutes
+
+## What Uses This Data
+Likely downstream:
+- dbo.vw_lol_bayes_strength_matchups
+- app_lol_team_overview.py Bayesian Matchup Read
+- Bayes scenario recommendations
+- ownership training features
+- Command Center Bayes review
+
+This view provides the team-level matchup bucket before lane-level matchup buckets are added.
+
+## Run Frequency
+Run when creating or updating the SQL view definition.
+
+Because this is a view, it updates automatically as:
+- dbo.lol_team_series_results changes
+- dbo.vw_lol_team_strength_bucket changes
+
+## Suggested Command / Execution
+Run in SQL Server Management Studio or your SQL runner connected to lol_esports.
+
+## Required Before Running
+Requires:
+- dbo.lol_team_series_results
+- dbo.vw_lol_team_strength_bucket
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_team_strength_matchups;
+
+Check matchup bucket distribution:
+SELECT
+    league,
+    season,
+    strength_matchup_bucket,
+    COUNT(*) AS rows_count,
+    AVG(CAST(won_series AS FLOAT)) AS win_rate,
+    AVG(player_dk_fp_with_gnp) AS avg_player_dk_fp_with_gnp
+FROM dbo.vw_lol_team_strength_matchups
+GROUP BY league, season, strength_matchup_bucket
+ORDER BY league, strength_matchup_bucket;
+
+Check unknown bucket rows:
+SELECT TOP 100
+    league,
+    season,
+    series_date,
+    teamname,
+    opponent_teamname,
+    team_strength_bucket,
+    opponent_strength_bucket,
+    strength_matchup_bucket
+FROM dbo.vw_lol_team_strength_matchups
+WHERE team_strength_bucket = 'unknown'
+   OR opponent_strength_bucket = 'unknown'
+ORDER BY series_date DESC;
+
+## Important Risk Areas
+
+### Risk 1: Hard-coded year = 2026
+This view will not include 2024, 2025, or future seasons unless edited.
+
+### Risk 2: Join to strength bucket does not include split
+dbo.vw_lol_team_strength_bucket has grain league + season + split + teamname.
+This view joins on league + season + teamname only.
+
+If the strength bucket view contains multiple splits for the same team/season, this can duplicate or mismatch rows.
+
+### Risk 3: Team name matching
+Joins use lower/trim team names. If team names differ between series results and strength buckets, strength bucket becomes unknown.
+
+### Risk 4: View depends on another view
+If dbo.vw_lol_team_strength_bucket is broken, this view breaks.
+
+### Risk 5: Unknown bucket fallback
+Unknown buckets are useful for avoiding nulls, but too many unknowns reduce model quality.
+
+## Recommended Future Enhancements
+- Add split to the join or create an all-season version intentionally.
+- Remove hard-coded year or parameterize via separate current-season view.
+- Add point-in-time strength version to avoid using future results in backtests.
+- Add unknown-rate health check to Command Center.
+- Add source split to final output if split remains relevant.
+
+## System Flow
+dbo.lol_team_series_results
+    -> dbo.vw_lol_team_strength_bucket
+    -> dbo.vw_lol_team_strength_matchups
+    -> Bayesian strength/lane matchup views
+    -> Team Overview / scenario recommendations
+
+## Documentation Status
+Category: SQL view
+Consumes: dbo.lol_team_series_results, dbo.vw_lol_team_strength_bucket
+Creates: dbo.vw_lol_team_strength_matchups
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, but source data must be current
+Daily post-results required: Source refresh only
+Critical dependency: team series results and team strength bucket view
+Critical risk: hard-coded 2026, split join mismatch, team-name matching

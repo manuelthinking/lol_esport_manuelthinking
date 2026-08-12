@@ -1,0 +1,255 @@
+# SQL-21_create_vw_lol_player_lane_power_rating_v1
+
+## Source SQL File
+21_create_vw_lol_player_lane_power_rating_v1.sql
+
+## Purpose
+Creates a player lane-power rating view.
+
+In plain English:
+This view takes the player lane-power base metrics and converts them into percentile-based scores by league and lane. It then combines those percentiles into one lane_power_score and assigns each player a lane-power tier.
+
+This is the scoring layer on top of the lane-power base view.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_player_lane_power_rating_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_player_lane_power_base_v1
+
+## Data It Creates
+Creates one row per:
+
+league + lane + team + player
+
+It keeps the source player/lane metrics and adds:
+- percentile scores
+- weighted lane_power_score
+- lane_power_rank
+- lane_player_pool_count
+- lane_power_tier
+
+## Grain
+One row per player/team/lane.
+
+## Main Logic
+
+### base CTE
+Reads from dbo.vw_lol_player_lane_power_base_v1 and computes percentile scores using PERCENT_RANK().
+
+Percentiles are calculated within:
+- league
+- lane
+
+Percentile components:
+- dk_score
+- kill_score
+- assist_score
+- cs_score
+- dpm_score
+- damage_share_score
+- gold10_score
+- xp10_score
+- cs10_score
+- vision_score_rank
+- wards_placed_score
+- wards_killed_score
+- first_blood_score
+- win_rate_score
+- death_control_score
+
+Important:
+death_control_score orders deaths_per_game descending, so lower deaths get the better percentile.
+
+### scored CTE
+Calculates lane_power_score with different weights by lane.
+
+### ranked CTE
+Ranks players within league/lane by lane_power_score.
+
+## Lane Weighting Logic
+
+### MID / ADC
+Prioritizes:
+- DK points
+- DPM
+- damage share
+- kills
+- assists
+- CS
+- early gold/xp
+- death control
+
+### JNG
+Prioritizes:
+- DK points
+- assists
+- kills
+- DPM
+- first blood
+- early gold/xp
+- death control
+
+### TOP
+Prioritizes:
+- DK points
+- DPM
+- CS
+- early gold/xp
+- damage share
+- kills
+- death control
+
+### SUP
+Prioritizes:
+- DK points
+- assists
+- vision
+- death control
+- wards placed/killed
+- DPM
+
+## Output Columns
+Includes all major base fields:
+- model_version
+- league
+- lane
+- team
+- player_name
+- player_id
+- games_played
+- win_rate
+- avg_dk_points
+- kills_per_game
+- deaths_per_game
+- assists_per_game
+- cs_per_min
+- dpm
+- avg_damage_share
+- avg_total_gold
+- avg_earned_gold
+- avg_gold_diff_10
+- avg_xp_diff_10
+- avg_cs_diff_10
+- avg_vision_score
+- wards_placed_per_game
+- wards_killed_per_game
+- first_blood_rate
+- kill_assist_per_game
+- kda_proxy
+
+Adds:
+- lane_power_score
+- lane_power_rank
+- lane_player_pool_count
+- lane_power_tier
+
+## Tier Logic
+lane_power_tier:
+- lane_power_score >= 85 -> Elite
+- lane_power_score >= 70 -> Strong
+- lane_power_score >= 50 -> Neutral
+- lane_power_score >= 35 -> Weak
+- else -> Poor
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_matchup_lane_edges_v1
+
+Later downstream:
+- dbo.vw_lol_matchup_lane_edge_summary_v1
+- dbo.vw_lol_upset_resistance_signal_v1
+- dbo.vw_lol_bayes_lane_power_comparison_v1
+- Team Overview Lane Power section
+- Command Center Lane Power health/review
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically when dbo.vw_lol_player_lane_power_base_v1 changes.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_player_lane_power_base_v1
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_player_lane_power_rating_v1;
+
+Check tier distribution:
+SELECT
+    league,
+    lane,
+    lane_power_tier,
+    COUNT(*) AS player_rows,
+    AVG(lane_power_score) AS avg_lane_power_score
+FROM dbo.vw_lol_player_lane_power_rating_v1
+GROUP BY league, lane, lane_power_tier
+ORDER BY league, lane, lane_power_tier;
+
+Check top players by lane:
+SELECT TOP 100
+    league,
+    lane,
+    team,
+    player_name,
+    games_played,
+    lane_power_score,
+    lane_power_rank,
+    lane_power_tier,
+    avg_dk_points,
+    dpm,
+    avg_damage_share,
+    kills_per_game,
+    assists_per_game
+FROM dbo.vw_lol_player_lane_power_rating_v1
+ORDER BY league, lane, lane_power_rank;
+
+## Important Risk Areas
+
+### Risk 1: Depends on base view quality
+If dbo.vw_lol_player_lane_power_base_v1 has stale or incomplete data, this rating view inherits it.
+
+### Risk 2: Percentile scoring is relative by league/lane
+Scores are not absolute. A 75 in one lane means relative to that league/lane player pool.
+
+### Risk 3: PERCENT_RANK with small pools
+Small lane/player pools can make scores jumpy.
+
+### Risk 4: Hard-coded weights
+Weights are hard-coded by lane. This is okay for v1, but should be versioned if changed.
+
+### Risk 5: Source base view was part of a numbering conflict
+The base view was previously uploaded as another file numbered 20, while ownership training also used 20. This chain should be renumbered cleanly later.
+
+## Recommended Future Enhancements
+- Add model_version reflecting weight version.
+- Add recent-form weighted lane_power_score.
+- Add separate "DFS ceiling" vs "stability" lane scores.
+- Add score calibration by lane over actual outcomes.
+- Add current-slate join view for DK slate players.
+
+## System Flow
+dbo.fact_lol_player_game
+    -> dbo.vw_lol_player_lane_power_base_v1
+    -> dbo.vw_lol_player_lane_power_rating_v1
+    -> dbo.vw_lol_matchup_lane_edges_v1
+
+## Documentation Status
+Category: SQL lane-power rating view
+Consumes: dbo.vw_lol_player_lane_power_base_v1
+Creates: dbo.vw_lol_player_lane_power_rating_v1
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, but source data must be current
+Daily post-results required: Source refresh only
+Critical dependency: player lane-power base view
+Critical risk: base data quality, hard-coded weights, relative percentile interpretation

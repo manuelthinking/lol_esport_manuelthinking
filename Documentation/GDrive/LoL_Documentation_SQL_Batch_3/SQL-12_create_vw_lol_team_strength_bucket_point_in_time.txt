@@ -1,0 +1,244 @@
+# SQL-12_create_vw_lol_team_strength_bucket_point_in_time
+
+## Source SQL File
+12_create_vw_lol_team_strength_bucket_point_in_time.sql
+
+## Purpose
+Creates a point-in-time team strength bucket view.
+
+In plain English:
+For each historical target series, this view calculates a team's strength using only that team's prior series before the target series date. This avoids future-data leakage when backtesting Bayes predictions.
+
+This is an improved version of the regular team strength bucket logic because it answers:
+
+"What did we know about this team before this series happened?"
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_team_strength_bucket_point_in_time
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_team_series_results
+
+## Data It Creates
+Creates one point-in-time strength row per:
+
+target historical series + team
+
+## Grain
+One row per:
+
+- target_series_id
+- teamname
+
+Each row represents the team's strength entering that specific target series.
+
+## Main Filters
+The target series are filtered to:
+
+- league IN ('LPL', 'LCK')
+- year = 2026
+- series_result IN ('2-0', '2-1', '1-2', '0-2')
+- teamname IS NOT NULL
+- opponent IS NOT NULL
+- series_start_date IS NOT NULL
+
+Important:
+This view is hard-coded to 2026.
+
+## Main Logic
+
+### target_series CTE
+Identifies every historical target series/team row to evaluate.
+
+Fields include:
+- target_series_id
+- league
+- season
+- target_series_date
+- teamname
+- opponent_teamname
+- actual_series_result
+- actual_won_series
+- actual_game_wins
+- actual_game_losses
+
+### prior_series CTE
+Finds only prior series for the same team before the target series date.
+
+Join conditions:
+- same league
+- same season
+- same teamname
+- prior series_start_date < target_series_date
+
+This is the key point-in-time logic.
+
+### league_prior_before_series CTE
+Calculates league-level prior win rate before the target series date.
+
+This means the league prior is also point-in-time.
+
+### team_record_before_series CTE
+Aggregates the team's prior record:
+- prior_series_count
+- prior_series_wins
+- prior_series_losses
+- prior_game_wins
+- prior_game_losses
+- first_prior_series_date
+- last_prior_series_date
+- raw_prior_series_win_rate
+
+### smoothed CTE
+Smooths the team's prior win rate toward the league prior.
+
+Formula:
+(prior_series_wins + league_prior_win_rate * 12)
+/
+(prior_series_count + 12)
+
+The prior weight is 12.
+
+## Output Columns
+- target_series_id
+- league
+- season
+- target_series_date
+- teamname
+- opponent_teamname
+- actual_series_result
+- actual_won_series
+- actual_game_wins
+- actual_game_losses
+- prior_series_count
+- prior_series_wins
+- prior_series_losses
+- prior_game_wins
+- prior_game_losses
+- first_prior_series_date
+- last_prior_series_date
+- raw_prior_series_win_rate
+- league_prior_rows
+- league_prior_win_rate
+- prior_weight
+- smoothed_prior_series_win_rate
+- team_strength_bucket_point_in_time
+- team_strength_sample_label_point_in_time
+
+## Bucket Logic
+
+### team_strength_bucket_point_in_time
+- prior_series_count < 5 -> neutral
+- smoothed_prior_series_win_rate >= 0.55 -> strong
+- smoothed_prior_series_win_rate <= 0.45 -> weak
+- else -> neutral
+
+### team_strength_sample_label_point_in_time
+- prior_series_count < 5 -> low_sample
+- prior_series_count between 5 and 9 -> medium_sample
+- else -> solid_sample
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_team_strength_matchups_point_in_time
+
+Later downstream:
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+- Bayes prediction backtesting
+- point-in-time model evaluation
+- scenario confidence calibration
+
+## Run Frequency
+Run when creating or updating the view definition.
+
+Because this is a view, the result updates automatically when dbo.lol_team_series_results changes.
+
+## Required Before Running
+Requires:
+- dbo.lol_team_series_results
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_team_strength_bucket_point_in_time;
+
+Check prior sample distribution:
+SELECT
+    league,
+    season,
+    team_strength_bucket_point_in_time,
+    team_strength_sample_label_point_in_time,
+    COUNT(*) AS rows_count,
+    AVG(CAST(actual_won_series AS FLOAT)) AS actual_win_rate
+FROM dbo.vw_lol_team_strength_bucket_point_in_time
+GROUP BY
+    league,
+    season,
+    team_strength_bucket_point_in_time,
+    team_strength_sample_label_point_in_time
+ORDER BY league, team_strength_bucket_point_in_time;
+
+Check first rows with no prior data:
+SELECT TOP 100
+    league,
+    season,
+    target_series_date,
+    teamname,
+    opponent_teamname,
+    prior_series_count,
+    league_prior_rows,
+    smoothed_prior_series_win_rate,
+    team_strength_bucket_point_in_time,
+    team_strength_sample_label_point_in_time
+FROM dbo.vw_lol_team_strength_bucket_point_in_time
+WHERE prior_series_count = 0
+ORDER BY target_series_date;
+
+## Important Risk Areas
+
+### Risk 1: Hard-coded 2026
+This view is point-in-time, but only for 2026. It needs a season parameter or annual update later.
+
+### Risk 2: Same-day ordering
+The view uses p.series_start_date < t.target_series_date. If two series happen on the same date, neither counts as prior to the other. That is usually safe, but may exclude earlier matches from the same day.
+
+### Risk 3: No split logic
+This version uses same league and season, not split. This may be intentional for all-2026 strength, but should be documented as a modeling choice.
+
+### Risk 4: Early-season teams are neutral
+Teams with fewer than 5 prior series are forced neutral. This is conservative but may understate early strong teams.
+
+### Risk 5: Team-name matching
+The prior-series join depends on normalized teamname matching exactly enough.
+
+## Recommended Future Enhancements
+- Replace hard-coded 2026 with a current-season view or dynamic season logic.
+- Consider DATETIME-based ordering if series_start_datetime is reliable.
+- Add recent-form weighting option.
+- Add split-aware or all-season mode explicitly.
+- Add Command Center health check for prior_series_count distribution.
+
+## System Flow
+dbo.lol_team_series_results
+    -> dbo.vw_lol_team_strength_bucket_point_in_time
+    -> dbo.vw_lol_team_strength_matchups_point_in_time
+    -> dbo.vw_lol_bayes_strength_matchups_point_in_time
+    -> Bayes backtesting without future leakage
+
+## Documentation Status
+Category: SQL point-in-time view
+Consumes: dbo.lol_team_series_results
+Creates: dbo.vw_lol_team_strength_bucket_point_in_time
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, but source data must be current
+Daily post-results required: Source refresh only
+Critical dependency: dbo.lol_team_series_results
+Critical risk: hard-coded 2026, same-date exclusion, team-name matching

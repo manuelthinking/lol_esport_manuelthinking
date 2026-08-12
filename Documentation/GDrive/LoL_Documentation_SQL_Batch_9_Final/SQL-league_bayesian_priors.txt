@@ -1,0 +1,104 @@
+# SQL-league_bayesian_priors
+
+## Source SQL File
+league_bayesian_priors.sql
+
+## Purpose
+Creates league-level Bayesian prior rates from the Bayes matchup training table.
+
+In plain English:
+This view calculates baseline win and series-result probabilities by league. These priors can be used when similar-matchup samples are thin or missing.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_bayes_league_priors
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_bayes_matchup_training
+
+## Data It Creates
+Creates one row per league.
+
+## Grain
+One row per:
+- league
+
+## Metrics Created
+- team_series_rows
+- league_win_rate
+- league_p_2_0
+- league_p_2_1
+- league_p_1_2
+- league_p_0_2
+
+## What Uses This Data
+Potential downstream:
+- older Bayesian matchup read
+- app_lol_team_overview.py if using legacy Bayes flow
+- fallback probabilities for thin sample cases
+
+The newer Bayes PIT population script computes league priors internally, so this view may be older/legacy unless still referenced by the app.
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because it is a view, it updates automatically when dbo.lol_bayes_matchup_training changes.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_matchup_training
+
+## Health Checks
+
+Check priors:
+SELECT
+    *
+FROM dbo.vw_lol_bayes_league_priors
+ORDER BY league;
+
+Check probability sums:
+SELECT
+    league,
+    league_p_2_0 + league_p_2_1 + league_p_1_2 + league_p_0_2 AS path_probability_sum
+FROM dbo.vw_lol_bayes_league_priors;
+
+## Important Risk Areas
+
+### Risk 1: Older Bayes table dependency
+This reads dbo.lol_bayes_matchup_training, not the newer PIT Bayes backtest tables/views.
+
+### Risk 2: Team-side rows
+The source table is team-side. league_win_rate should naturally average around 0.50 if both sides exist for each series.
+
+### Risk 3: No season filter
+This groups all data in dbo.lol_bayes_matchup_training by league only. If multiple seasons are loaded, priors blend all seasons.
+
+### Risk 4: Drops and recreates view
+Uses DROP VIEW / CREATE VIEW.
+
+## Recommended Future Enhancements
+- Add season-level priors.
+- Add current-season-only priors.
+- Use CREATE OR ALTER VIEW.
+- Decide if this legacy prior view is still needed next to PIT priors.
+- Add row count/sample warning if league has thin data.
+
+## System Flow
+dbo.lol_bayes_matchup_training
+    -> dbo.vw_lol_bayes_league_priors
+    -> legacy Bayes fallback logic
+
+## Documentation Status
+Category: SQL league prior view
+Consumes: dbo.lol_bayes_matchup_training
+Creates: dbo.vw_lol_bayes_league_priors
+Run frequency: Setup/change only
+Daily pre-lock required: No
+Daily post-results required: Source table population only
+Critical dependency: populated Bayes matchup training table
+Critical risk: likely legacy, no season filter, all-season blending

@@ -1,0 +1,234 @@
+# SQL-04_create_vw_lol_team_strength_bucket
+
+## Source SQL File
+04_create_vw_lol_team_strength_bucket.sql
+
+## Purpose
+Creates a view that labels each historical team as strong, neutral, or weak.
+
+In plain English:
+This view looks at historical series wins and losses, smooths each team’s win rate toward the league/split average, and assigns a strength bucket.
+
+This is used as one of the core inputs for Bayesian matchup logic.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_team_strength_bucket
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_team_series_results
+
+The source table must already be built from historical team game/series results.
+
+## Data It Creates
+Creates a view with one row per:
+
+- league
+- season
+- split
+- teamname
+
+## Grain
+league + season + split + teamname
+
+## Main Filters
+The view only includes:
+
+- league IN ('LPL', 'LCK')
+- series_result IN ('2-0', '2-1', '1-2', '0-2')
+- teamname IS NOT NULL
+
+## Main Logic
+
+### Base CTE
+Pulls series result rows from dbo.lol_team_series_results.
+
+Important fields:
+- league
+- year as season
+- split
+- teamname
+- series_id
+- is_series_win
+- wins
+- losses
+- series_result
+- games_played
+- series_start_date
+
+### League Priors CTE
+Calculates league/split-level average win rate.
+
+Fields:
+- league_team_series_rows
+- league_win_rate
+
+Grouped by:
+- league
+- season
+- split
+
+### Team Record CTE
+Calculates team record.
+
+Fields:
+- series_count
+- series_wins
+- series_losses
+- game_wins
+- game_losses
+- first_series_date
+- last_series_date
+- raw_series_win_rate
+
+### Smoothed CTE
+Smooths the team win rate toward the league/split average.
+
+Formula:
+
+(team series wins + league_win_rate * 12)
+/
+(team series count + 12)
+
+The prior weight is 12.
+
+## Output Columns
+- league
+- season
+- split
+- teamname
+- series_count
+- series_wins
+- series_losses
+- game_wins
+- game_losses
+- first_series_date
+- last_series_date
+- raw_series_win_rate
+- league_win_rate
+- prior_weight
+- smoothed_series_win_rate
+- team_strength_bucket
+- team_strength_sample_label
+
+## Bucket Logic
+
+### team_strength_bucket
+- series_count < 5 -> neutral
+- smoothed_series_win_rate >= 0.55 -> strong
+- smoothed_series_win_rate <= 0.45 -> weak
+- everything else -> neutral
+
+### team_strength_sample_label
+- series_count < 5 -> low_sample
+- series_count between 5 and 9 -> medium_sample
+- else -> solid_sample
+
+## What Uses This Data
+Known downstream use:
+- dbo.vw_lol_team_strength_matchups
+- dbo.vw_lol_bayes_strength_matchups
+- app_lol_team_overview.py Bayesian Matchup Read
+
+Potential downstream use:
+- Command Center Bayes review
+- ownership training view
+- lineup scenario selection
+- team strength diagnostics
+
+## Run Frequency
+Run when creating or updating the SQL view definition.
+
+Because it is a view, the results update automatically when dbo.lol_team_series_results changes.
+
+After new results are loaded, you do not need to rerun this file unless the view definition changed.
+
+## Suggested Command / Execution
+Run in SQL Server Management Studio or your SQL runner connected to lol_esports.
+
+## Required Before Running
+Requires:
+- dbo.lol_team_series_results
+
+## Health Checks
+
+Check view row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_team_strength_bucket;
+
+Check bucket distribution:
+SELECT
+    league,
+    season,
+    split,
+    team_strength_bucket,
+    team_strength_sample_label,
+    COUNT(*) AS teams
+FROM dbo.vw_lol_team_strength_bucket
+GROUP BY league, season, split, team_strength_bucket, team_strength_sample_label
+ORDER BY season DESC, league, split, team_strength_bucket;
+
+Check latest team strength:
+SELECT TOP 100
+    league,
+    season,
+    split,
+    teamname,
+    series_count,
+    series_wins,
+    series_losses,
+    raw_series_win_rate,
+    league_win_rate,
+    smoothed_series_win_rate,
+    team_strength_bucket,
+    team_strength_sample_label,
+    last_series_date
+FROM dbo.vw_lol_team_strength_bucket
+ORDER BY season DESC, league, smoothed_series_win_rate DESC;
+
+## Important Risk Areas
+
+### Risk 1: Depends on lol_team_series_results
+If team series results are stale, strength buckets are stale.
+
+### Risk 2: Small sample teams forced neutral
+This is intentional, but it can hide a genuinely strong new team until they reach 5 series.
+
+### Risk 3: Split is part of the grain
+The view creates separate rows by split. Downstream joins must include split or risk duplicate/mismatched rows.
+
+### Risk 4: Only LPL/LCK and BO3 paths
+Other leagues and formats are excluded.
+
+### Risk 5: Prior weight is hard-coded
+The smoothing prior weight is fixed at 12.
+
+## Recommended Future Enhancements
+- Add a version that supports point-in-time strength before each slate.
+- Add configurable season/split filtering.
+- Add all-2026 and recent-form variants.
+- Add comments explaining whether split should be used in downstream joins.
+- Consider separate "current active strength" view for Streamlit apps.
+
+## System Flow
+dbo.lol_team_series_results
+    -> dbo.vw_lol_team_strength_bucket
+    -> dbo.vw_lol_team_strength_matchups
+    -> dbo.vw_lol_bayes_strength_matchups
+    -> Team Overview / Bayes scenario logic
+
+## Documentation Status
+Category: SQL view
+Consumes: dbo.lol_team_series_results
+Creates: dbo.vw_lol_team_strength_bucket
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, but source data must be current
+Daily post-results required: Source table refresh only
+Critical dependency: dbo.lol_team_series_results
+Critical risk: stale source table, split-aware downstream joins, hard-coded bucket thresholds

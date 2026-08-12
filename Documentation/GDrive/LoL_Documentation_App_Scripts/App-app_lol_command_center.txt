@@ -1,0 +1,280 @@
+# App-app_lol_command_center
+
+## Purpose
+Streamlit Command Center for the LoL DFS workflow.
+
+In plain English:
+This is the main control dashboard for checking slate health, starters, Bayes/lane-power status, ownership data, contest results, top 1% lineups, and running registered pipeline jobs from the Action Engine.
+
+This app is meant to be the central "iRebal-style" operational screen for the LoL project.
+
+## Type
+Streamlit app.
+
+## Suggested Run Command
+cd C:\DailyDFS\LoL
+python -m streamlit run .\app_lol_command_center.py
+
+## Data It Consumes
+
+### SQL Tables / Views
+- dbo.dk_lol_slate_player
+- dbo.vw_lol_slate_lane_power_signal_live_v1
+- dbo.vw_lol_ownership_training
+- dbo.vw_lol_bayes_prediction_backtest_match_level
+- raw.dk_lol_contest_standings
+- raw.dk_lol_player_ownership
+- lol.vw_contest_summary
+- lol.vw_finish_bucket_summary
+- lol.vw_top_1pct_lineups
+
+### Local Files / Folders
+- C:\DailyDFS\LoL\data\manual_starters.csv
+- C:\DailyDFS\LoL\data\slate_data
+- C:\DailyDFS\LoL\data\contest-standings
+- C:\DailyDFS\LoL\lineups
+
+### Python Module Dependency
+- engine.jobs
+  - list_jobs()
+  - run_job()
+
+## Data It Creates
+This app does not directly create core DFS data tables.
+
+However, through the Daily Commands / Action Engine page, it can trigger jobs that create or update data.
+
+The app itself mainly displays:
+- current slate status
+- data health
+- exceptions
+- starter review
+- Bayes review
+- ownership review
+- contest review
+- top 1% lineup review
+- job run results
+
+## Main Pages
+The sidebar navigation includes:
+
+1. Slate Dashboard
+2. Data Health
+3. Exceptions
+4. Starter Review
+5. Bayes Review
+6. Ownership Review
+7. Contest Review
+8. Top 1% Lineups
+9. Daily Commands
+
+## Page Details
+
+### Slate Dashboard
+Shows high-level slate status:
+- overall status
+- DK slate loaded/missing
+- manual starters ready/needs review
+- contest results loaded/not loaded
+- slate rows
+- team count
+- player rows
+- TEAM rows
+- lineup file count
+- manual starter rows
+- marked starters
+- lane rating rows
+- ownership rows
+- raw contest rows
+
+Also displays the selected slate player table.
+
+### Data Health
+Shows pass/fail style checks for:
+- DK slate loaded
+- manual starters file exists
+- manual starters selected
+- lane power signal available
+- ownership training available
+- Bayes matched rows
+- Bayes missing rows
+- contest standings loaded
+- raw player ownership loaded
+- generated lineup files
+
+Also shows file counts for:
+- slate CSV files
+- contest ZIP files
+- lineup CSV files
+
+### Exceptions
+Builds a review table of operational issues.
+
+Examples:
+- no DK slate rows loaded
+- no player rows
+- no TEAM rows
+- manual_starters.csv missing
+- no starters selected
+- low starter count
+- no lane rating rows
+- ownership missing
+- Bayes values missing
+- low Bayes sample
+- ownership includes non-starters
+- no generated lineup files
+- no raw contest standings
+- no raw ownership loaded
+
+The page includes a suggested fix order:
+1. Fix missing slate or starter issues.
+2. Fix Bayes matching issues.
+3. Review ownership gaps.
+4. Build lineups.
+5. Load contest results after lock/contest completion.
+
+### Starter Review
+Reads manual_starters.csv and displays:
+- manual rows
+- marked starters
+- teams
+- filterable starter table
+- selected slate players
+
+### Bayes Review
+Uses vw_lol_ownership_training and vw_lol_bayes_prediction_backtest_match_level.
+
+Displays:
+- Bayes matched/missing count
+- average Bayes win %
+- Bayes by team
+- player-level Bayes / ownership table
+- recent Bayes backtest
+- winner accuracy
+- score accuracy
+
+### Ownership Review
+Displays:
+- ownership rows
+- average ownership
+- max ownership
+- player count
+- ownership by team
+- player ownership detail
+
+### Contest Review
+Uses lol.vw_contest_summary and lol.vw_finish_bucket_summary.
+
+Displays:
+- contests
+- lineups
+- best rank
+- winning score
+- contest summary
+- finish bucket summary
+
+### Top 1% Lineups
+Uses lol.vw_top_1pct_lineups.
+
+Displays:
+- top 1% lineup rows
+- best score
+- average ownership
+- average salary left
+- captain position summary
+- top lineup detail
+
+### Daily Commands
+Uses engine.jobs as an Action Engine.
+
+Displays:
+- registered jobs
+- job group
+- job type
+- target
+- timeout
+- description
+
+Can run one selected job and displays:
+- success/failure
+- return code
+- duration
+- command
+- stdout
+- stderr
+
+Also contains manual command reference blocks for:
+- daily slate prep
+- open lineup builder
+- post-contest review
+
+## Does This Need To Be Run Daily?
+Yes, this should be opened daily on slate days.
+
+It is not a data builder by itself, but it is the daily control panel for:
+- checking data health
+- running jobs
+- reviewing outputs
+- deciding whether the slate is ready to build
+- reviewing post-contest results
+
+## When To Use
+Use this app:
+- after loading a DK slate
+- after generating manual starters
+- before building lineups
+- after running Bayes/lane-power refreshes
+- after building lineups
+- after contest results are loaded
+- whenever you need to diagnose missing data
+
+## Suggested Workflow Placement
+Pre-lock:
+DK slate ingest
+    -> Command Center Data Health
+    -> Starter Review
+    -> Exceptions
+    -> Bayes Review / Lane Power
+    -> Lineup Builder
+
+Post-contest:
+contest standings ingest
+    -> transform lineups
+    -> enrich lineups
+    -> Command Center Contest Review / Top 1% Lineups
+
+## Important Risk Areas
+
+### Risk 1: Many SQL view dependencies
+If any SQL view is missing or broken, the related page may show SQL errors.
+
+### Risk 2: Caching
+Uses Streamlit cache. If data is stale, use Refresh Data / Clear Cache.
+
+### Risk 3: Action Engine dependency
+Daily Commands depends on engine.jobs. If jobs are not registered there, the page will not be useful for running tasks.
+
+### Risk 4: Status logic is only as good as row counts
+The health/status checks are helpful but not a guarantee that every underlying row is correct.
+
+### Risk 5: File matching for lineup count
+Lineup file count is based on filename patterns in the lineups folder. Bad naming can make the app think lineups are missing.
+
+## Recommended Future Enhancements
+- Add saved job run history table.
+- Add chained workflows.
+- Add per-slate job arguments.
+- Add direct links/buttons to open generated CSV files.
+- Add export for exceptions.
+- Add stronger starter validation by team/position.
+- Add data freshness timestamps to each health check.
+
+## Documentation Status
+Category: Streamlit command center app
+Consumes: slate data, manual starters, ownership views, Bayes views, contest views, file folders, engine jobs
+Creates: No direct data tables; can trigger jobs through Action Engine
+Run frequency: Daily slate operations and post-contest review
+Pre-lock workflow: Yes
+Post-results workflow: Yes
+Critical dependency: dbo.dk_lol_slate_player, manual_starters.csv, engine.jobs, health SQL views
+Critical risk: SQL view breakage, stale cache, unregistered jobs

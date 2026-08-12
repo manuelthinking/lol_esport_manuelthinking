@@ -1,0 +1,176 @@
+# Script-ingest_dk_lol_contest_standings
+
+## Purpose
+Ingests DraftKings contest standings ZIP files into raw SQL tables.
+
+It extracts:
+- lineup standings
+- player ownership
+- actual FPTS
+
+This is the first step in the post-contest results pipeline.
+
+## Data It Consumes
+
+### Source Folder
+C:\DailyDFS\LoL\data\contest-standings
+
+Processes every .zip file in that folder.
+
+## Expected ZIP Filename Format
+contest-standings-YYYYMMDD_<slate_name>.zip
+
+Example:
+contest-standings-20260506_lck_lpl.zip
+
+Extracts:
+- slate_date
+- slate_name
+
+## Expected CSV Filename Inside ZIP
+contest-standings-190196001.csv
+
+Extracts:
+- contest_id
+
+## Required CSV Columns
+- Rank
+- EntryId
+- EntryName
+- TimeRemaining
+- Points
+- Lineup
+- Player
+- Roster Position
+- %Drafted
+- FPTS
+
+## Data It Inserts
+
+### raw.dk_lol_contest_standings
+Stores lineup-level contest standings rows.
+
+Fields:
+- slate_date
+- slate_name
+- contest_id
+- contest_name
+- rank_num
+- entry_id
+- entry_name
+- time_remaining
+- points
+- lineup_raw
+- source_zip
+- source_csv
+- source_row_number
+- etl_batch_id
+
+### raw.dk_lol_player_ownership
+Stores player-level ownership and actual fantasy points.
+
+Fields:
+- slate_date
+- slate_name
+- contest_id
+- contest_name
+- player_name
+- roster_position
+- ownership_pct
+- actual_fp
+- source_zip
+- source_csv
+- source_row_number
+- etl_batch_id
+
+## Duplicate Load Protection
+Before inserting rows from a CSV, deletes existing rows with the same:
+- source_zip
+- source_csv
+
+This prevents duplicate loads from reruns.
+
+## What Uses This Data
+Direct downstream script:
+- Script-transform_dk_lol_lineups
+
+Other downstream use:
+- ownership model training
+- player actual FP analysis
+- ownership vs projection review
+- lineup builder tuning
+
+## Run Frequency
+Run after DK contest standings ZIP files are downloaded.
+
+This is post-contest only.
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\ingest_dk_lol_contest_standings.py
+
+## Important Risk Areas
+- ZIP filename controls slate date and slate name.
+- Processes every ZIP in the contest-standings folder.
+- contest_name is currently inserted as NULL.
+- Ownership rows may repeat depending on DK export format.
+- Re-running modified ZIP contents with same name replaces prior source rows.
+
+## Health Checks
+SELECT TOP 50
+    slate_date,
+    slate_name,
+    contest_id,
+    rank_num,
+    entry_id,
+    entry_name,
+    points,
+    LEFT(lineup_raw, 150) AS lineup_preview,
+    source_zip,
+    source_csv,
+    source_row_number,
+    etl_batch_id
+FROM raw.dk_lol_contest_standings
+ORDER BY slate_date DESC, contest_id, rank_num;
+
+SELECT
+    slate_date,
+    slate_name,
+    contest_id,
+    COUNT(*) AS standings_rows,
+    MIN(rank_num) AS best_rank,
+    MAX(rank_num) AS worst_rank,
+    MAX(points) AS top_score
+FROM raw.dk_lol_contest_standings
+GROUP BY slate_date, slate_name, contest_id
+ORDER BY slate_date DESC, slate_name, contest_id;
+
+SELECT
+    slate_date,
+    slate_name,
+    contest_id,
+    COUNT(*) AS ownership_rows,
+    COUNT(DISTINCT player_name) AS unique_players,
+    AVG(ownership_pct) AS avg_ownership,
+    MAX(ownership_pct) AS max_ownership
+FROM raw.dk_lol_player_ownership
+GROUP BY slate_date, slate_name, contest_id
+ORDER BY slate_date DESC, slate_name, contest_id;
+
+## System Flow
+DK contest standings ZIP
+    -> Script-ingest_dk_lol_contest_standings
+    -> raw.dk_lol_contest_standings
+    -> raw.dk_lol_player_ownership
+    -> Script-transform_dk_lol_lineups
+    -> lol.fact_lineup_result / lol.fact_lineup_player
+    -> Script-enrich_dk_lol_lineups_from_slate
+    -> backtesting / ownership analysis
+
+## Documentation Status
+Category: DK contest standings ingest script
+Consumes: DK contest standings ZIP files
+Creates/Inserts: raw.dk_lol_contest_standings, raw.dk_lol_player_ownership
+Run frequency: After DK contest results are downloaded
+Post-results workflow: Yes
+Critical risk: wrong slate date/name from filename, ownership row duplication, all-ZIP folder processing

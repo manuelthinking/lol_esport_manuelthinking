@@ -1,0 +1,136 @@
+# SQL-36_create_lol_matchup_lane_edges_pit_snapshot
+
+## Source SQL File
+36_create_lol_matchup_lane_edges_pit_snapshot.sql
+
+## Purpose
+Creates a physical snapshot table for the PIT matchup lane edges view.
+
+In plain English:
+This file creates an empty table using the structure of dbo.vw_lol_matchup_lane_edges_pit_v1. The snapshot table is used so downstream PIT backtest refresh logic can read lane-edge rows from a stable materialized table instead of recalculating the full PIT lane-edge view every time.
+
+## SQL Object Created
+Creates:
+
+dbo.lol_matchup_lane_edges_pit_snapshot
+
+This is a physical table.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_matchup_lane_edges_pit_v1
+
+## Data It Creates / Updates
+Creates the table only if it does not already exist.
+
+It uses:
+
+SELECT TOP 0 *
+INTO dbo.lol_matchup_lane_edges_pit_snapshot
+FROM dbo.vw_lol_matchup_lane_edges_pit_v1;
+
+This creates the table structure only and inserts zero rows.
+
+## Grain
+The intended grain matches dbo.vw_lol_matchup_lane_edges_pit_v1.
+
+Based on downstream usage, expected grain is:
+
+target_series_id + team + opponent + lane
+
+One normal target series should usually produce:
+- 10 rows
+- 5 lanes from Team A perspective
+- 5 lanes from Team B perspective
+
+## Refresh Behavior
+This file does not refresh or insert data.
+
+Refreshing is handled by:
+
+37_refresh_lol_matchup_lane_edges_pit_snapshot.sql
+
+## What Uses This Data
+Direct downstream:
+- 37_refresh_lol_matchup_lane_edges_pit_snapshot.sql
+- 40_refresh_lol_bayes_lane_power_backtest_pit_snapshot.sql
+
+Indirect downstream:
+- dbo.lol_bayes_lane_power_backtest_pit_snapshot
+- backtest summary views
+- Command Center / model review outputs
+
+## Run Frequency
+Run once during setup or when recreating the snapshot table.
+
+Do not run daily unless the table is missing or intentionally being rebuilt.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_matchup_lane_edges_pit_v1
+
+Important:
+The SQL file that creates dbo.vw_lol_matchup_lane_edges_pit_v1 was not included in the prior batch. It is likely the missing file 32.
+
+## Required After Running
+Run:
+1. 37_refresh_lol_matchup_lane_edges_pit_snapshot.sql
+2. a missing index file if it exists, likely file 38
+
+## Health Checks
+
+Check table exists:
+SELECT
+    OBJECT_ID('dbo.lol_matchup_lane_edges_pit_snapshot', 'U') AS object_id;
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.lol_matchup_lane_edges_pit_snapshot;
+
+Check columns:
+SELECT
+    COLUMN_NAME,
+    DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'dbo'
+  AND TABLE_NAME = 'lol_matchup_lane_edges_pit_snapshot'
+ORDER BY ORDINAL_POSITION;
+
+## Important Risk Areas
+
+### Risk 1: Depends on missing upstream PIT lane-edge view
+This table cannot be created unless dbo.vw_lol_matchup_lane_edges_pit_v1 already exists.
+
+### Risk 2: Creates empty table only
+After this file runs, the table has no rows until file 37 is run.
+
+### Risk 3: SELECT * table creation
+The table structure depends entirely on the current shape of dbo.vw_lol_matchup_lane_edges_pit_v1. If that view changes later, the snapshot table will not automatically update.
+
+### Risk 4: No indexes created here
+This file does not create indexes. File 38 may be missing and should be checked.
+
+## Recommended Future Enhancements
+- Replace SELECT TOP 0 * with explicit CREATE TABLE columns.
+- Add snapshot_refreshed_at or source_view_version.
+- Add a matching index file for this table if missing.
+- Create one controlled refresh procedure for the PIT lane-power backtest chain.
+- Document or add file 32 that creates dbo.vw_lol_matchup_lane_edges_pit_v1.
+
+## System Flow
+dbo.vw_lol_matchup_lane_edges_pit_v1
+    -> SQL-36 creates dbo.lol_matchup_lane_edges_pit_snapshot
+    -> SQL-37 refreshes snapshot rows
+    -> SQL-40 uses snapshot to refresh PIT Bayes/Lane Power backtest snapshot
+
+## Documentation Status
+Category: SQL snapshot table creation
+Consumes: dbo.vw_lol_matchup_lane_edges_pit_v1
+Creates: dbo.lol_matchup_lane_edges_pit_snapshot
+Run frequency: Setup/rebuild only
+Daily pre-lock required: No
+Daily post-results required: No, refresh file is repeatable step
+Critical dependency: missing PIT lane-edge view file, likely file 32
+Critical risk: empty table until refresh, SELECT * schema drift, no indexes in this file

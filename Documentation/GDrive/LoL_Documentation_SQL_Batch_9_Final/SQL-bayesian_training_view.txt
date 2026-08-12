@@ -1,0 +1,123 @@
+# SQL-bayesian_training_view
+
+## Source SQL File
+bayesian_training_view
+
+## Purpose
+Creates an app-facing wrapper view over dbo.lol_bayes_matchup_training.
+
+In plain English:
+This view exposes selected fields from the physical Bayes matchup training table so apps and queries can read the training data using a view name.
+
+## SQL Object Created
+Creates:
+
+dbo.vw_lol_bayes_matchup_training
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_bayes_matchup_training
+
+## Data It Creates
+Creates a view with selected fields from dbo.lol_bayes_matchup_training.
+
+## Grain
+Same as source table:
+
+one row per team per historical series
+
+## Main Columns
+- bayes_matchup_id
+- series_id
+- series_date
+- season
+- league
+- teamname
+- opponent_teamname
+- series_result
+- won_series
+- games_played
+- lane kill/assist/death/DK edges
+- team kill/assist/death/DK edges
+- team_rating_score
+- opp_rating_score
+- team_rating_edge
+- bucket fields:
+  - top_kill_bucket
+  - jng_kill_bucket
+  - mid_kill_bucket
+  - bot_kill_bucket
+  - sup_assist_bucket
+  - bot_dk_bucket
+  - team_rating_bucket
+
+## What Uses This Data
+Potential downstream:
+- app_lol_team_overview.py
+- older Bayes logic
+- league priors view
+- Bayes training review
+- ownership training, if using older Bayes table
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because it is a view, it updates automatically when dbo.lol_bayes_matchup_training changes.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_matchup_training
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_bayes_matchup_training;
+
+Check bucket distribution:
+SELECT
+    league,
+    team_rating_bucket,
+    bot_dk_bucket,
+    COUNT(*) AS rows_count,
+    AVG(CAST(won_series AS FLOAT)) AS win_rate
+FROM dbo.vw_lol_bayes_matchup_training
+GROUP BY league, team_rating_bucket, bot_dk_bucket
+ORDER BY league, rows_count DESC;
+
+## Important Risk Areas
+
+### Risk 1: Older Bayes pipeline
+This view appears to belong to the older physical-table Bayes training flow. The newer PIT Bayes views may have superseded much of this logic.
+
+### Risk 2: Drops and recreates view
+Uses DROP VIEW / CREATE VIEW instead of CREATE OR ALTER.
+
+### Risk 3: Depends on populated physical table
+If dbo.lol_bayes_matchup_training is empty, this view is empty.
+
+## Recommended Future Enhancements
+- Decide whether this old Bayes training view is still active.
+- If active, rename/number it into the setup sequence.
+- If superseded, archive it separately.
+- Use CREATE OR ALTER VIEW.
+- Add documentation comment noting whether this is legacy or active.
+
+## System Flow
+dbo.lol_bayes_matchup_training
+    -> dbo.vw_lol_bayes_matchup_training
+    -> older Bayes app/query logic
+
+## Documentation Status
+Category: SQL wrapper view
+Consumes: dbo.lol_bayes_matchup_training
+Creates: dbo.vw_lol_bayes_matchup_training
+Run frequency: Setup/change only
+Daily pre-lock required: No
+Daily post-results required: Source table population only
+Critical dependency: populated Bayes matchup training table
+Critical risk: likely legacy/overlapping Bayes flow

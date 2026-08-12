@@ -1,0 +1,160 @@
+# App-app_lol_player_matchups
+
+## Purpose
+Streamlit app for player lane matchup reports.
+
+In plain English:
+This app lets you compare LoL players in lane matchup history, including direct head-to-head, common opponent comparison, champion matchups, and lane dominance ratings.
+
+## Type
+Streamlit app.
+
+## Suggested Run Command
+cd C:\DailyDFS\LoL
+python -m streamlit run .\app_lol_player_matchups.py
+
+## Data It Consumes
+
+### SQL Table
+- dbo.fact_lol_player_lane_matchup
+
+The app expects this table to include player-vs-opponent lane matchup rows.
+
+Important fields used:
+- position
+- player_name
+- opponent_player
+- champion
+- opponent_champion
+- dk_points
+- dk_edge
+- kills
+- deaths
+- assists
+- gold_diff_10
+- xp_diff_10
+- cs_diff_10
+- dpm
+- damage_share
+- vision_score
+
+## Data It Creates
+This app does not create or update data.
+
+It displays matchup reports from the existing table.
+
+## Main Tabs
+1. Direct H2H
+2. Common Opponent Compare
+3. Best vs Opponent
+4. Champion Matchups
+5. Lane Ratings
+
+## Tab Details
+
+### Direct H2H
+Compares Player A against Player B when they directly faced each other.
+
+Shows:
+- games
+- average DK points
+- average DK edge
+- kills/deaths/assists
+- gold/xp/cs diff at 10
+- DPM
+- damage share
+- vision score
+
+### Common Opponent Compare
+Compares Player A and Player B against the same selected opponent.
+
+Useful for:
+- indirect comparison
+- matchup scouting
+- checking how two players performed against a shared lane opponent
+
+### Best vs Opponent
+Shows best historical performers against the selected opponent.
+
+Uses a minimum games slider.
+
+### Champion Matchups
+Lets user choose:
+- Player A champion
+- Player B opponent champion
+
+Then shows historical matchup data for that champion pairing.
+
+### Lane Ratings
+Shows lane dominance ratings by position/player.
+
+Uses minimum games threshold.
+
+## Filters / Controls
+Sidebar includes:
+- position
+- Player A
+- Player B / comparison player
+- common opponent
+- minimum games
+
+## What Uses This App
+This is a research/scouting app.
+
+It can support:
+- player projection decisions
+- lane-power interpretation
+- Team Overview review
+- manual scenario decisions
+- lineup builder player pool decisions
+
+It does not feed data directly into another script.
+
+## Run Frequency
+Use as needed before lock when you want to research player/lane matchups.
+
+Not required every day unless you want deeper manual analysis.
+
+## Suggested Workflow Placement
+Historical lane matchup data
+    -> app_lol_player_matchups.py
+    -> manual player/lane read
+    -> Team Overview / Lineup Builder decisions
+
+## Important Risk Areas
+
+### Risk 1: Depends on dbo.fact_lol_player_lane_matchup
+If this table is empty/stale, the app will not be useful.
+
+### Risk 2: Table naming overlap
+Earlier documented script build_lane_matchups.py creates dbo.fact_lol_lane_matchup, while this app reads dbo.fact_lol_player_lane_matchup.
+
+That means there may be a separate script/view for player-oriented lane matchup data that still needs documentation.
+
+### Risk 3: Player names must match
+Player dropdowns depend on exact player_name values in the matchup table.
+
+### Risk 4: Champion dropdowns can be empty
+If player/champion history is missing, champion matchup tab can have limited data.
+
+### Risk 5: Historical data may not be point-in-time
+This app appears to read all matchup history in the table, not a point-in-time snapshot.
+
+## Recommended Future Enhancements
+- Add date range filter.
+- Add league/team filter.
+- Add current slate player filter.
+- Add export to CSV.
+- Add direct comparison charts.
+- Add point-in-time mode for pre-slate analysis.
+- Clarify source table lineage for dbo.fact_lol_player_lane_matchup.
+
+## Documentation Status
+Category: Streamlit player matchup research app
+Consumes: dbo.fact_lol_player_lane_matchup
+Creates: No persistent data
+Run frequency: Optional pre-lock research
+Pre-lock workflow: Optional
+Post-results workflow: No
+Critical dependency: player lane matchup table
+Critical risk: stale matchup table, possible table lineage gap

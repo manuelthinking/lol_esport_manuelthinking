@@ -10,4 +10,29 @@ reports/
 *.csv
 
 .DS_Store
-Thumbs.db
+Thumbs.db# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Environment / secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Logs / temporary outputs
+*.log
+tmp/
+temp/
+
+# Local backup files
+*_backup.py
+*_backup1.py
+*_backup2.py
+
+# Local working notes / generated inventories
+lol_project_file_list.txt
+lol_project_file_list_clean.txt
+process.txt
+steps to build.txt

@@ -1,0 +1,238 @@
+# SQL-lol_bayes_matchup_training
+
+## Source SQL File
+lol_bayes_matchup_training.sql
+
+## Purpose
+Populates the physical Bayes matchup training table from series-level player stats.
+
+In plain English:
+This script takes one-row-per-player-per-series data, rolls it up to team/lane totals, matches each team to its opponent, calculates lane and team edges, assigns buckets, then inserts the result into dbo.lol_bayes_matchup_training.
+
+This is the older physical-table Bayes training population script.
+
+## SQL Object Updated
+Refreshes:
+
+dbo.lol_bayes_matchup_training
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_series_player_stats
+
+### Source Table
+- dbo.lol_player_lane_ratings
+
+## Data It Creates / Updates
+Runs:
+
+TRUNCATE TABLE dbo.lol_bayes_matchup_training;
+
+Then inserts rebuilt rows.
+
+## Grain
+One row per:
+
+team per historical series
+
+A normal series should create two rows:
+- Team A perspective
+- Team B perspective
+
+## Preconditions
+The script checks for:
+- dbo.vw_lol_series_player_stats
+- dbo.lol_bayes_matchup_training
+
+If either is missing, it raises an error and returns.
+
+## Main Logic
+
+### team_lane CTE
+Aggregates player-series rows into team/lane totals.
+
+Grouped by:
+- series_id
+- teamname
+- opponent_teamname
+
+Creates:
+- top/jng/mid/bot/sup kills
+- top/jng/mid/bot/sup assists
+- top/jng/mid/bot/sup deaths
+- top/jng/mid/bot/sup DK points
+- team kills
+- team assists
+- team deaths
+- team DK
+
+Filters:
+- league IN ('LPL', 'LCK')
+- series_result IN ('2-0', '2-1', '1-2', '0-2')
+- position IN ('TOP', 'JNG', 'MID', 'BOT', 'SUP')
+
+### team_with_rating CTE
+Joins team aggregates to dbo.lol_player_lane_ratings by:
+- team name
+- season
+- position
+
+Creates:
+- team_rating_score = average rating score across lanes
+
+### matched CTE
+Self-joins each team aggregate to the opponent row for the same series.
+
+Calculates:
+- team lane totals
+- opponent lane totals
+- lane kill/assist/death/DK edges
+- team kill/assist/death/DK edges
+- team rating edge
+
+### bucketed CTE
+Assigns bucket labels for selected features.
+
+Bucket fields:
+- top_kill_bucket
+- jng_kill_bucket
+- mid_kill_bucket
+- bot_kill_bucket
+- sup_assist_bucket
+- bot_dk_bucket
+- team_rating_bucket
+
+### Final INSERT
+Inserts all team, opponent, edge, rating, and bucket fields into dbo.lol_bayes_matchup_training.
+
+## Bucket Logic
+
+### Kill buckets for TOP/JNG/MID/BOT
+- >= 2 -> strong_plus
+- >= 0.5 -> plus
+- > -0.5 -> neutral
+- > -2 -> minus
+- else -> strong_minus
+
+### SUP assist bucket
+- >= 5 -> strong_plus
+- >= 1.5 -> plus
+- > -1.5 -> neutral
+- > -5 -> minus
+- else -> strong_minus
+
+### BOT DK bucket
+- >= 20 -> strong_plus
+- >= 7 -> plus
+- > -7 -> neutral
+- > -20 -> minus
+- else -> strong_minus
+
+### Team rating bucket
+- >= 0.40 -> strong_plus
+- >= 0.15 -> plus
+- > -0.15 -> neutral
+- > -0.40 -> minus
+- else -> strong_minus
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_bayes_matchup_training
+- dbo.vw_lol_bayes_league_priors
+
+Potential downstream:
+- older app-facing Bayes training logic
+- legacy Bayesian matchup read
+
+Newer alternatives:
+- dbo.vw_lol_bayes_strength_matchups_point_in_time
+- dbo.lol_bayes_prediction_backtest
+- PIT Bayes/Lane Power chain
+
+## Run Frequency
+Run after:
+1. dbo.vw_lol_series_player_stats is current.
+2. dbo.lol_player_lane_ratings is current.
+3. dbo.lol_bayes_matchup_training table exists.
+
+This is a post-results/model-refresh script if the legacy Bayes flow is still used.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_series_player_stats
+- dbo.lol_bayes_matchup_training
+- dbo.lol_player_lane_ratings
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.lol_bayes_matchup_training;
+
+Check rows by league/season:
+SELECT
+    league,
+    season,
+    COUNT(*) AS rows_count,
+    COUNT(DISTINCT series_id) AS series_count,
+    MIN(series_date) AS first_series_date,
+    MAX(series_date) AS last_series_date
+FROM dbo.lol_bayes_matchup_training
+GROUP BY league, season
+ORDER BY season DESC, league;
+
+Check bucket distribution:
+SELECT
+    league,
+    team_rating_bucket,
+    bot_dk_bucket,
+    COUNT(*) AS rows_count,
+    AVG(CAST(won_series AS FLOAT)) AS win_rate
+FROM dbo.lol_bayes_matchup_training
+GROUP BY league, team_rating_bucket, bot_dk_bucket
+ORDER BY league, rows_count DESC;
+
+## Important Risk Areas
+
+### Risk 1: Full truncate/reload
+If the insert fails after truncate, dbo.lol_bayes_matchup_training is left empty.
+
+### Risk 2: Legacy overlap
+This appears to overlap with newer PIT Bayes views and may be legacy.
+
+### Risk 3: Depends on player-series stats view
+If dbo.vw_lol_series_player_stats is incomplete or uses placeholder DK points, training table quality suffers.
+
+### Risk 4: Not point-in-time
+This population creates historical training data using completed full-history player/series stats. It is not point-in-time safe for backtesting unless handled carefully downstream.
+
+### Risk 5: Team rating join may duplicate
+It joins player lane ratings by team/season/position and averages. If rating table has multiple rows per position/player/team, this can affect team_rating_score.
+
+## Recommended Future Enhancements
+- Decide whether this legacy Bayes table is still active.
+- If active, wrap truncate/insert in a transaction.
+- Add season filter or current-season parameter.
+- Add run_id / refreshed_at metadata.
+- Consider replacing with PIT Bayes source views for backtesting.
+- Add post-run row count validation.
+
+## System Flow
+dbo.vw_lol_series_player_stats
+dbo.lol_player_lane_ratings
+    -> SQL-lol_bayes_matchup_training
+    -> dbo.lol_bayes_matchup_training
+    -> dbo.vw_lol_bayes_matchup_training
+    -> dbo.vw_lol_bayes_league_priors
+
+## Documentation Status
+Category: SQL legacy Bayes population script
+Consumes: dbo.vw_lol_series_player_stats, dbo.lol_player_lane_ratings
+Updates: dbo.lol_bayes_matchup_training
+Run frequency: Conditional, if legacy Bayes flow is used
+Daily pre-lock required: No
+Daily post-results required: Conditional, after historical refresh
+Critical dependency: player-series stats and Bayes training table
+Critical risk: legacy overlap, truncate-before-insert, not point-in-time

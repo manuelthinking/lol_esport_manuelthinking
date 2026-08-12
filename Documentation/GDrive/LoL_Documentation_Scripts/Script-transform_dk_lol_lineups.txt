@@ -1,0 +1,175 @@
+# Script-transform_dk_lol_lineups
+
+## Purpose
+Transforms raw DraftKings contest standings lineups into structured lineup result tables.
+
+It reads raw DK contest standings, parses lineup strings, creates one lineup-result row, and creates seven player rows for each lineup.
+
+## Data It Consumes
+
+### Source Table
+- raw.dk_lol_contest_standings
+
+Only rows where lineup_raw is not null are used.
+
+## Fields Read
+- raw_standing_id
+- slate_date
+- slate_name
+- contest_id
+- contest_name
+- entry_id
+- entry_name
+- rank_num
+- points
+- lineup_raw
+
+## Data It Creates
+
+### Inserts Into lol.fact_lineup_result
+One row per contest lineup.
+
+Inserted:
+- slate_id
+- contest_id
+- contest_name
+- entry_id
+- entry_name
+- username
+- rank_num
+- points
+- lineup_raw
+- captain_player
+- source_standing_id
+
+Inserted as NULL at this step:
+- winnings
+- salary_used
+- salary_left
+- stack_structure
+- captain_team
+- captain_position
+- total_ownership
+- avg_ownership
+
+### Inserts Into lol.fact_lineup_player
+Seven rows per lineup:
+- CPT
+- TOP
+- JNG
+- MID
+- ADC
+- SUP
+- TEAM
+
+Inserted:
+- lineup_result_id
+- roster_slot
+- player_name
+- position
+- is_captain
+- source_standing_id
+
+Inserted as NULL at this step:
+- team
+- salary
+- ownership_pct
+- actual_fp
+
+## Slate Dimension Handling
+Checks lol.dim_slate by:
+- slate_date
+- slate_name
+- site = DraftKings
+
+If not found, inserts a new dim_slate row.
+
+## Lineup Parsing Logic
+Expected slot labels:
+- ADC
+- CPT
+- JNG
+- MID
+- SUP
+- TEAM
+- TOP
+
+The parser expects a lineup_raw string containing these slot labels and names.
+
+## Duplicate Protection
+Skips rows already present in lol.fact_lineup_result based on source_standing_id.
+
+## What Uses This Data
+Direct downstream script:
+- Script-enrich_dk_lol_lineups_from_slate
+
+Downstream analysis:
+- top lineup backtesting
+- captain position analysis
+- stack structure analysis
+- salary usage analysis
+- ownership training
+- contest review dashboards
+
+## Run Frequency
+Run after DK contest standings/results are loaded into raw.dk_lol_contest_standings.
+
+This is post-contest only.
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\transform_dk_lol_lineups.py
+
+## Important Risk Areas
+- Regex parsing depends on DK lineup string format.
+- CPT actual position is not known yet.
+- Stack structure is intentionally blank here.
+- Winnings are not populated.
+- TEAM names could theoretically confuse parsing if formatting is unusual.
+
+## Health Checks
+SELECT
+    ds.slate_date,
+    ds.slate_name,
+    COUNT(*) AS lineup_rows
+FROM lol.fact_lineup_result lr
+JOIN lol.dim_slate ds
+    ON lr.slate_id = ds.slate_id
+GROUP BY ds.slate_date, ds.slate_name
+ORDER BY ds.slate_date DESC, ds.slate_name;
+
+SELECT
+    lr.lineup_result_id,
+    ds.slate_date,
+    ds.slate_name,
+    lr.entry_name,
+    COUNT(lp.lineup_player_id) AS player_rows
+FROM lol.fact_lineup_result lr
+JOIN lol.dim_slate ds
+    ON lr.slate_id = ds.slate_id
+LEFT JOIN lol.fact_lineup_player lp
+    ON lr.lineup_result_id = lp.lineup_result_id
+GROUP BY
+    lr.lineup_result_id,
+    ds.slate_date,
+    ds.slate_name,
+    lr.entry_name
+HAVING COUNT(lp.lineup_player_id) <> 7
+ORDER BY ds.slate_date DESC;
+
+## System Flow
+DK contest standings CSV
+    -> raw.dk_lol_contest_standings
+    -> Script-transform_dk_lol_lineups
+    -> lol.fact_lineup_result
+    -> lol.fact_lineup_player
+    -> Script-enrich_dk_lol_lineups_from_slate
+    -> contest backtesting and lineup analysis
+
+## Documentation Status
+Category: Contest standings lineup transform script
+Consumes: raw.dk_lol_contest_standings
+Creates/Inserts: lol.fact_lineup_result, lol.fact_lineup_player, sometimes lol.dim_slate
+Run frequency: After DK contest standings are loaded
+Post-results workflow: Yes
+Critical risk: parsing failures, missing captain actual position, missing stack structure until enrichment

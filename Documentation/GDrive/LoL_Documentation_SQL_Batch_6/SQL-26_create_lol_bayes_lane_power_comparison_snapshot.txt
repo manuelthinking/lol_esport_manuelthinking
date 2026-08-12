@@ -1,0 +1,134 @@
+# SQL-26_create_lol_bayes_lane_power_comparison_snapshot
+
+## Source SQL File
+26_create_lol_bayes_lane_power_comparison_snapshot.sql
+
+## Purpose
+Creates a physical snapshot table for the Bayes vs Lane Power comparison view.
+
+In plain English:
+This file creates an empty table with the same columns as dbo.vw_lol_bayes_lane_power_comparison_v1. The table is meant to store a materialized snapshot of the comparison view so downstream backtest summary views can run against a stable, indexed table instead of recalculating the full view chain every time.
+
+## SQL Object Created
+Creates:
+
+dbo.lol_bayes_lane_power_comparison_snapshot
+
+This is a physical table.
+
+## Data It Consumes
+
+### Source View
+- dbo.vw_lol_bayes_lane_power_comparison_v1
+
+## Data It Creates / Updates
+Creates the table only if it does not already exist.
+
+It uses:
+
+SELECT TOP 0 *
+INTO dbo.lol_bayes_lane_power_comparison_snapshot
+FROM dbo.vw_lol_bayes_lane_power_comparison_v1;
+
+This creates the table structure only. It does not insert any rows.
+
+## Grain
+The intended grain matches dbo.vw_lol_bayes_lane_power_comparison_v1:
+
+one row per game/team/opponent perspective
+
+Usually two rows per game:
+- Team A perspective
+- Team B perspective
+
+## Refresh Behavior
+This file does not refresh data.
+
+It only creates an empty snapshot table.
+
+Refreshing is handled by:
+
+27_refresh_lol_bayes_lane_power_comparison_snapshot.sql
+
+## What Uses This Data
+Direct downstream:
+- 27_refresh_lol_bayes_lane_power_comparison_snapshot.sql
+- 28_index_lol_bayes_lane_power_comparison_snapshot.sql
+- dbo.vw_lol_bayes_lane_power_backtest_summary_v1
+- dbo.vw_lol_lane_power_warning_backtest_v1
+
+Likely app usage:
+- Command Center lane-power/Bayes summary
+- Team Overview lane-power review, if pointed at summary outputs
+
+## Run Frequency
+Run once during setup, or when recreating the snapshot table.
+
+Do not run daily unless the table is missing or intentionally being rebuilt.
+
+## Required Before Running
+Requires:
+- dbo.vw_lol_bayes_lane_power_comparison_v1
+
+## Required After Running
+Run:
+1. 27_refresh_lol_bayes_lane_power_comparison_snapshot.sql
+2. 28_index_lol_bayes_lane_power_comparison_snapshot.sql
+
+## Health Checks
+
+Check table exists:
+SELECT
+    OBJECT_ID('dbo.lol_bayes_lane_power_comparison_snapshot', 'U') AS object_id;
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.lol_bayes_lane_power_comparison_snapshot;
+
+Check columns:
+SELECT
+    COLUMN_NAME,
+    DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'dbo'
+  AND TABLE_NAME = 'lol_bayes_lane_power_comparison_snapshot'
+ORDER BY ORDINAL_POSITION;
+
+## Important Risk Areas
+
+### Risk 1: Creates table from current view shape
+If dbo.vw_lol_bayes_lane_power_comparison_v1 changes later, this snapshot table will not automatically change. You may need to drop/recreate or alter the table.
+
+### Risk 2: Creates empty table only
+After running this file, the table has zero rows until file 27 is run.
+
+### Risk 3: SELECT * dependency
+Because the table is created with SELECT *, column order and structure depend completely on the current view definition.
+
+### Risk 4: Does not create indexes
+Indexes are handled separately by file 28.
+
+## Recommended Future Enhancements
+- Add a schema version column.
+- Add snapshot_refreshed_at column if possible.
+- Add explicit CREATE TABLE definition instead of SELECT TOP 0 *.
+- Add a stored procedure that creates/refreshes/indexes in one controlled workflow.
+- Add row count validation after refresh.
+
+## System Flow
+dbo.vw_lol_bayes_lane_power_comparison_v1
+    -> SQL-26 creates snapshot table structure
+    -> SQL-27 refreshes snapshot data
+    -> SQL-28 indexes snapshot table
+    -> SQL-29/30 backtest summary views
+
+## Documentation Status
+Category: SQL snapshot table creation
+Consumes: dbo.vw_lol_bayes_lane_power_comparison_v1
+Creates: dbo.lol_bayes_lane_power_comparison_snapshot
+Run frequency: Setup/rebuild only
+Daily pre-lock required: No
+Daily post-results required: No, refresh file is the repeatable step
+Critical dependency: comparison view exists before creation
+Critical risk: table schema can drift if source view changes

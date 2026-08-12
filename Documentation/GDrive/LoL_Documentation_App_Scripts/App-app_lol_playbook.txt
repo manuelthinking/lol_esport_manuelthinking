@@ -1,0 +1,139 @@
+# App-app_lol_playbook
+
+## Purpose
+Simple Streamlit app for viewing a LoL slate playbook CSV.
+
+In plain English:
+This app loads a playbook CSV, displays the player-level playbook, creates a team overview summary, and allows inspection of raw playbook data.
+
+This is a lightweight CSV viewer, not a SQL-driven app.
+
+## Type
+Streamlit app.
+
+## Suggested Run Command
+cd C:\DailyDFS\LoL
+python -m streamlit run .\app_lol_playbook.py
+
+## Data It Consumes
+
+### Playbook CSV
+The app searches for the first existing playbook file from:
+
+1. C:\DailyDFS\LoL\data\outputs\lol_playbook.csv
+2. C:\DailyDFS\LoL\data\processed\lol_playbook.csv
+3. C:\DailyDFS\LoL\output\lol_playbook.csv
+4. C:\DailyDFS\LoL\lol_playbook.csv
+
+It can also accept an uploaded CSV through the Streamlit sidebar.
+
+## Data It Creates
+This app does not create data files or SQL tables.
+
+It displays:
+- player playbook table
+- team overview
+- raw data
+
+## Main Tabs
+1. Player Playbook
+2. Team Overview
+3. Raw Data
+
+## Tab Details
+
+### Player Playbook
+Displays the playbook CSV.
+
+Includes search across text columns for player/team filtering.
+
+### Team Overview
+Builds a team-level summary from the playbook CSV.
+
+The app tries to detect columns flexibly:
+- team
+- opponent
+- player
+- position
+- salary
+- projection
+- value
+- starter
+
+Outputs team-level metrics:
+- players
+- starters
+- total_projection
+- avg_projection
+- total_salary
+- avg_salary
+- avg_value
+- proj_per_1k_salary
+- top_player
+- top_player_pos
+- top_player_proj
+- top_player_salary
+
+### Raw Data
+Displays available columns and the full raw CSV.
+
+## Required Data Columns
+For the Team Overview tab, the app needs to identify:
+- team
+- player
+- projection
+- salary
+
+If those cannot be found, it shows an error and lists available columns.
+
+## What Uses This App
+This app is used for review only.
+
+It does not feed other scripts directly.
+
+The upstream item is likely:
+- build_lol_playbook.py
+
+That script should generate lol_playbook.csv before this app is useful.
+
+## Run Frequency
+Run when you have generated or downloaded a playbook CSV and want to review it visually.
+
+This is optional if the Command Center and Team Overview app now replace the old CSV playbook workflow.
+
+## Suggested Workflow Placement
+build_lol_playbook.py
+    -> lol_playbook.csv
+    -> app_lol_playbook.py
+    -> manual slate review
+
+## Important Risk Areas
+
+### Risk 1: Depends on file location
+If lol_playbook.csv is written somewhere else, the app will not find it unless uploaded manually.
+
+### Risk 2: Flexible column detection
+The app guesses column names. If the playbook columns change too much, the Team Overview tab may not work.
+
+### Risk 3: No SQL connection
+This app does not check whether the database is current. It only shows what is in the CSV.
+
+### Risk 4: Could be superseded
+Some functionality may now be better handled by app_lol_team_overview.py or app_lol_command_center.py.
+
+## Recommended Future Enhancements
+- Add a clear selected file path display.
+- Add support for multiple playbook CSVs by date/slate.
+- Add export of filtered views.
+- Add warning when playbook file is older than current slate date.
+- Consider retiring if Team Overview fully replaces the playbook CSV review.
+
+## Documentation Status
+Category: Streamlit CSV playbook viewer
+Consumes: lol_playbook.csv or uploaded CSV
+Creates: No persistent data
+Run frequency: Optional, after playbook CSV generation
+Pre-lock workflow: Optional
+Post-results workflow: No
+Critical dependency: playbook CSV path and column names
+Critical risk: stale CSV or missing expected columns

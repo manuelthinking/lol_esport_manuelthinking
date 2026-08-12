@@ -1,0 +1,193 @@
+# App-app_lol_slate_review
+
+## Purpose
+Streamlit app for reviewing DraftKings LoL contest results by slate.
+
+In plain English:
+This app analyzes completed contest results and highlights contest summary, finish buckets, captain trends, stack trends, top lineups, and player appearances in top 1% lineups.
+
+This is a post-contest review dashboard.
+
+## Type
+Streamlit app.
+
+## Suggested Run Command
+cd C:\DailyDFS\LoL
+python -m streamlit run .\app_lol_slate_review.py
+
+## Data It Consumes
+
+### SQL Tables / Views
+- lol.dim_slate
+- lol.fact_lineup_result
+- lol.fact_lineup_player
+- lol.vw_finish_bucket_summary
+- lol.vw_top_1pct_lineups
+
+## Data It Creates
+This app does not create or update data.
+
+It displays contest review summaries.
+
+## Main Filters
+Sidebar:
+- Slate
+- Contest
+
+Contest can be:
+- All
+- specific contest_id
+
+## Main Tabs
+1. Contest Summary
+2. Finish Buckets
+3. Captain Trends
+4. Stack Trends
+5. Top Lineups
+6. Player Appearances
+
+## Tab Details
+
+### Contest Summary
+Shows contest-level rows:
+- slate date
+- slate name
+- contest id
+- lineups
+- best rank
+- worst rank
+- winning score
+- average score
+- average total ownership
+- average salary left
+
+### Finish Buckets
+Uses lol.vw_finish_bucket_summary.
+
+Shows bucket-level performance:
+- Top 0.1%
+- Top 1%
+- Top 5%
+- Top 20%
+- other buckets
+
+Metrics:
+- lineups
+- average points
+- average total ownership
+- average player ownership
+- average salary left
+
+Also displays a bar chart for ownership/salary left.
+
+### Captain Trends
+Uses lol.vw_top_1pct_lineups.
+
+Shows top 1% performance by captain_position:
+- top 1% lineup count
+- average points
+- average total ownership
+- average salary left
+
+### Stack Trends
+Uses lol.vw_top_1pct_lineups.
+
+Shows top 1% performance by stack_structure:
+- top 1% lineup count
+- average points
+- average total ownership
+- average salary left
+
+### Top Lineups
+Shows top 200 top 1% lineups with:
+- contest_id
+- rank_num
+- points
+- captain_player
+- captain_team
+- captain_position
+- stack_structure
+- team_stack_summary
+- total_ownership
+- avg_ownership
+- salary_left
+- lineup_raw
+
+### Player Appearances
+Calculates which players appeared in top 1% lineups.
+
+Shows:
+- roster_slot
+- actual_position
+- player_name
+- team
+- top_1pct_appearances
+- average ownership
+- average actual FP
+- average salary
+
+## What Uses This App
+This app is used after results are loaded and enriched.
+
+It helps tune:
+- CPT rules
+- stack rules
+- salary-left rules
+- ownership thresholds
+- player pool construction
+- future lineup builder settings
+
+## Required Before Running
+The post-contest pipeline should be complete:
+1. ingest_dk_lol_contest_standings.py
+2. transform_dk_lol_lineups.py
+3. enrich_dk_lol_lineups_from_slate.py
+
+Also required:
+- lol.vw_finish_bucket_summary
+- lol.vw_top_1pct_lineups
+
+## Run Frequency
+Run after contest results are loaded.
+
+Not needed before lock.
+
+## Suggested Workflow Placement
+DK contest standings ZIP
+    -> ingest_dk_lol_contest_standings
+    -> transform_dk_lol_lineups
+    -> enrich_dk_lol_lineups_from_slate
+    -> app_lol_slate_review
+    -> lineup rule tuning
+
+## Important Risk Areas
+
+### Risk 1: Requires enriched lineup data
+If salary/team/position/stack fields are not enriched, many trends will be incomplete.
+
+### Risk 2: Depends on top 1% view
+If lol.vw_top_1pct_lineups is broken or not updated, captain and stack tabs will be empty.
+
+### Risk 3: Contest filter depends on fact_lineup_result
+If dim_slate or fact_lineup_result has bad slate/date values, the slate picker can be misleading.
+
+### Risk 4: Ownership fields may be null
+If ownership enrichment is incomplete, average ownership metrics can be missing or misleading.
+
+## Recommended Future Enhancements
+- Add comparison across multiple slates.
+- Add trend history for captain position and stack structures.
+- Add export buttons for each tab.
+- Add generated lineup vs optimal/top 1% comparison.
+- Add user lineup tracking if entries are tagged.
+- Add ROI/winnings if winnings are populated.
+
+## Documentation Status
+Category: Streamlit post-contest review app
+Consumes: lineup result/player facts, slate dimension, finish bucket view, top 1% view
+Creates: No persistent data
+Run frequency: After contest results are loaded
+Pre-lock workflow: No
+Post-results workflow: Yes
+Critical dependency: enriched contest lineup data and top 1% views
+Critical risk: missing enrichment, null ownership, stale views

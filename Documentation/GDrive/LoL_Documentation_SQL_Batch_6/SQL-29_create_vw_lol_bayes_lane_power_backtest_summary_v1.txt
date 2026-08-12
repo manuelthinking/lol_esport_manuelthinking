@@ -1,0 +1,174 @@
+# SQL-29_create_vw_lol_bayes_lane_power_backtest_summary_v1
+
+## Source SQL File
+29_create_vw_lol_bayes_lane_power_backtest_summary_v1.sql
+
+## Purpose
+Creates a summary view for Bayes vs Lane Power backtesting.
+
+In plain English:
+This view summarizes how Bayes and Lane Power performed across historical rows. It groups results overall, by Bayes/Lane alignment label, by upset signal, by upset resistance tier, and by Bayes favorite status.
+
+This is the main high-level performance summary for the Bayes vs Lane Power comparison system.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_bayes_lane_power_backtest_summary_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_bayes_lane_power_comparison_snapshot
+
+Important:
+This view reads the snapshot table, not the live comparison view.
+
+## Data It Creates
+Creates a summary view with one row per:
+
+summary_group + summary_bucket
+
+## Grain
+One row per summary bucket.
+
+Summary groups:
+- Overall
+- Bayes/Lane Alignment
+- Upset Signal
+- Upset Resistance Tier
+- Bayes Favorite Status
+
+## Main Filter
+The base CTE filters to:
+
+actual_won_series IS NOT NULL
+
+So only evaluated historical rows are included.
+
+## Main Metrics
+For every summary bucket, the view calculates:
+
+- rows_count
+- bayes_eval_rows
+- bayes_winner_accuracy
+- lane_power_eval_rows
+- lane_power_winner_accuracy
+- bayes_correct_count
+- bayes_wrong_count
+- lane_power_correct_count
+- lane_power_wrong_count
+
+## Summary Sections
+
+### Overall
+One row:
+- All Matches
+
+### Bayes/Lane Alignment
+Groups by:
+- bayes_lane_alignment_label
+
+Examples may include:
+- Bayes and Lane Signal Aligned or Neutral
+- Bayes Favorite / Lane Stomp Warning
+- Bayes Favorite / Lane Stomp Support
+- Bayes Favorite / Carry Lanes Questionable
+- Bayes Underdog / Lane Power Live
+- Bayes Toss-Up / Lane Power Has Lean
+- Lane Signal Only
+
+### Upset Signal
+Groups by:
+- upset_signal_label
+
+### Upset Resistance Tier
+Groups by:
+- upset_resistance_tier
+
+### Bayes Favorite Status
+Groups by:
+- bayes_favorite_status
+
+## What Uses This Data
+Likely downstream:
+- Command Center Bayes/Lane Power review
+- Team Overview diagnostics
+- model validation reports
+- manual cleanup checklist
+- future dashboard charts
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically when the snapshot table changes.
+
+However, the snapshot table must be refreshed with file 27 for this summary to reflect latest upstream data.
+
+## Required Before Running
+Requires:
+- dbo.lol_bayes_lane_power_comparison_snapshot
+
+Recommended order:
+1. 26_create_lol_bayes_lane_power_comparison_snapshot.sql
+2. 27_refresh_lol_bayes_lane_power_comparison_snapshot.sql
+3. 28_index_lol_bayes_lane_power_comparison_snapshot.sql
+4. 29_create_vw_lol_bayes_lane_power_backtest_summary_v1.sql
+
+## Health Checks
+
+View row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_bayes_lane_power_backtest_summary_v1;
+
+Show full summary:
+SELECT
+    *
+FROM dbo.vw_lol_bayes_lane_power_backtest_summary_v1
+ORDER BY summary_group, rows_count DESC;
+
+Check overall row:
+SELECT
+    *
+FROM dbo.vw_lol_bayes_lane_power_backtest_summary_v1
+WHERE summary_group = 'Overall';
+
+## Important Risk Areas
+
+### Risk 1: Snapshot must be refreshed
+This view can look valid but still be stale if file 27 has not been run.
+
+### Risk 2: Team-side rows, not match-level rows
+The source snapshot is team-perspective rows. Accuracy here is at team-side row level unless the snapshot view already controls for match-level interpretation.
+
+### Risk 3: NULL labels become their own grouping behavior
+If labels are NULL, SQL GROUP BY will create a NULL bucket.
+
+### Risk 4: No league split
+This summary does not group by league. If LPL/LCK behave differently, use more detailed queries or add a league-level summary view.
+
+## Recommended Future Enhancements
+- Add league-level summary version.
+- Add date-range summary.
+- Add sample minimum filter.
+- Add match-level summary if one-row-per-match is needed.
+- Add snapshot refresh timestamp tracking.
+- Add output to Command Center.
+
+## System Flow
+dbo.lol_bayes_lane_power_comparison_snapshot
+    -> dbo.vw_lol_bayes_lane_power_backtest_summary_v1
+    -> Bayes/Lane Power performance review
+
+## Documentation Status
+Category: SQL backtest summary view
+Consumes: dbo.lol_bayes_lane_power_comparison_snapshot
+Creates: dbo.vw_lol_bayes_lane_power_backtest_summary_v1
+Run frequency: Setup/change only; view updates automatically from snapshot
+Daily pre-lock required: No
+Daily post-results required: Refresh snapshot if new data exists
+Critical dependency: snapshot table refreshed
+Critical risk: stale snapshot, team-side row interpretation, no league grouping

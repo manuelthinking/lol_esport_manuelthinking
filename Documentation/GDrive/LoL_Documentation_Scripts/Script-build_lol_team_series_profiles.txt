@@ -1,0 +1,173 @@
+# Script-build_lol_team_series_profiles
+
+## Purpose
+Creates a team-level historical profile table for LoL best-of-3 series outcomes.
+
+It summarizes how each team performs in each possible series result:
+- 2-0
+- 2-1
+- 1-2
+- 0-2
+
+This table helps determine team DFS environment, sweep upside, bloodbath potential, and TEAM-slot value.
+
+## Data It Consumes
+
+### Source Table
+- dbo.lol_team_series_results
+
+Only rows with these results are used:
+- 2-0
+- 2-1
+- 1-2
+- 0-2
+
+## Data It Creates
+
+### Target Table
+- dbo.lol_team_series_profiles
+
+This is a physical SQL table, not a view.
+
+The script:
+1. Creates the table if needed.
+2. Deletes existing rows.
+3. Rebuilds and inserts fresh profile rows.
+
+## Grain
+One row per:
+- teamname
+- league
+- series_result
+
+Primary key:
+- teamname
+- league
+- series_result
+
+## Main Metrics Created
+- series_count
+- first_series_date
+- last_series_date
+- avg_games_played
+- avg_wins
+- avg_losses
+- win_rate
+- avg_player_dk_fp_base
+- avg_player_dk_fp_with_gnp
+- avg_player_gnp_bonus_total_5
+- avg_team_slot_dk_fp_base
+- avg_team_slot_dk_fp_with_gnp
+- avg_team_slot_gnp_bonus
+- avg_game_length_minutes
+- avg_total_game_length_minutes
+- avg_team_kills
+- avg_team_deaths
+- avg_kills_per_game
+- avg_deaths_per_game
+- kill_death_ratio
+- assist_per_kill
+- avg_dragons
+- avg_barons
+- avg_towers
+- avg_firstbloods
+- avg_gold_diff_10
+- avg_xp_diff_10
+- avg_cs_diff_10
+- avg_gold_diff_15
+- avg_xp_diff_15
+- avg_cs_diff_15
+
+## Custom Scores
+### series_dfs_score
+Higher means better overall DFS environment.
+
+### bloodiness_score
+Higher means more fight-heavy / DFS-friendly game environment.
+
+### clean_stomp_score
+Higher means a cleaner dominant win profile.
+
+## Profile Labels
+2-0 labels:
+- Elite 2-0 Smash
+- Strong 2-0 Producer
+- Clean But Low DFS
+- Standard 2-0
+
+2-1 labels:
+- Elite 2-1 Bloodbath
+- Strong 2-1 Ceiling
+- Bloody But Volatile
+- Standard 2-1
+
+1-2 labels:
+- Live Losing Stack
+- Useful Loss Volume
+- Low Loss Output
+
+0-2 labels:
+- Competitive Sweep Loss
+- Dead Sweep Loss
+
+## What Uses This Data
+Known downstream use:
+- Script-build_lol_top_lineups
+
+Used for:
+- team stack scores
+- player projections
+- TEAM slot projections
+- projected paths
+- 2-0 vs 2-1 preferences
+
+## Run Frequency
+Run after new completed match results are loaded and after dbo.lol_team_series_results is refreshed.
+
+This is mostly a post-results refresh script.
+
+## Suggested Command
+cd C:\DailyDFS\LoL
+python .\scripts\build_lol_team_series_profiles.py
+
+## Important Risk Areas
+- Full delete and rebuild.
+- Depends completely on dbo.lol_team_series_results.
+- Team name consistency matters.
+- Profiles currently blend all years/splits in the source table.
+
+## Health Checks
+SELECT
+    league,
+    series_result,
+    COUNT(*) AS profile_rows,
+    SUM(series_count) AS total_series_samples,
+    MIN(first_series_date) AS first_series_date,
+    MAX(last_series_date) AS last_series_date
+FROM dbo.lol_team_series_profiles
+GROUP BY league, series_result
+ORDER BY league, series_result;
+
+SELECT
+    teamname,
+    league,
+    COUNT(DISTINCT series_result) AS result_profiles
+FROM dbo.lol_team_series_profiles
+GROUP BY teamname, league
+HAVING COUNT(DISTINCT series_result) < 4
+ORDER BY result_profiles ASC, teamname;
+
+## System Flow
+dbo.lol_team_series_results
+    -> Script-build_lol_team_series_profiles
+    -> dbo.lol_team_series_profiles
+    -> Script-build_lol_top_lineups
+
+## Documentation Status
+Category: Historical team profile builder
+Consumes: dbo.lol_team_series_results
+Creates: dbo.lol_team_series_profiles
+Run frequency: After new completed results are loaded
+Daily pre-lock required: Only if new results were loaded
+Post-results workflow: Yes
+Critical risk: stale source results, team-name matching, all-years blending

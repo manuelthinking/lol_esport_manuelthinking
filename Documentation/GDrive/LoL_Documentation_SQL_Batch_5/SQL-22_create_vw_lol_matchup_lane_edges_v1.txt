@@ -1,0 +1,246 @@
+# SQL-22_create_vw_lol_matchup_lane_edges_v1
+
+## Source SQL File
+22_create_vw_lol_matchup_lane_edges_v1.sql
+
+## Purpose
+Creates player-vs-player lane power edges for each actual game.
+
+In plain English:
+This view takes the players who appeared in a game, joins each player to their lane-power rating, pairs them with the opposing player in the same lane, and calculates lane-power differences.
+
+This is the matchup-level lane edge view.
+
+## SQL Object Created
+Creates or alters:
+
+dbo.vw_lol_matchup_lane_edges_v1
+
+This is a view.
+
+## Data It Consumes
+
+### Source Table
+- dbo.fact_lol_player_game
+
+### Source View
+- dbo.vw_lol_player_lane_power_rating_v1
+
+## Data It Creates
+Creates one row per:
+
+game + team + opponent + lane
+
+For each actual game, a normal 5-lane match should generate:
+- 10 rows total
+- 5 rows from Team A perspective
+- 5 rows from Team B perspective
+
+## Grain
+One row per team perspective per lane per game.
+
+## Main Filters
+Reads from dbo.fact_lol_player_game where:
+- league IN ('LPL', 'LCK')
+- season = 2026
+- team_name IS NOT NULL
+- player_name IS NOT NULL
+- position IS NOT NULL
+- position is one of top/jng/jun/jungle/mid/bot/adc/sup
+
+Important:
+This view is hard-coded to season = 2026.
+
+## Position Normalization
+- bot / adc -> ADC
+- jng / jun / jungle -> JNG
+- all others -> UPPER(position)
+
+Expected lanes:
+- TOP
+- JNG
+- MID
+- ADC
+- SUP
+
+## Main Logic
+
+### game_players CTE
+Gets players from actual games and normalizes lane.
+
+### team_lanes CTE
+Joins each actual game player to their lane-power rating by:
+- league
+- lane
+- team
+- player_name
+
+### lane_edges CTE
+Self-joins team_lanes to the opponent's player in the same game/lane.
+
+Join conditions:
+- same game_id
+- same league
+- same lane
+- team <> opponent team
+
+This creates team perspective and opponent perspective rows.
+
+## Edge Logic
+All edges are team player minus opponent player.
+
+Examples:
+- lane_power_edge = player lane_power_score - opponent lane_power_score
+- avg_dk_points_edge = player avg DK - opponent avg DK
+- kills_per_game_edge = player kills/game - opponent kills/game
+- dpm_edge = player DPM - opponent DPM
+
+Positive means the team-side player has the advantage.
+Negative means the opponent-side player has the advantage.
+
+## Output Columns
+- model_version
+- game_id
+- game_date
+- league
+- season
+- split
+- team
+- opponent
+- lane
+- player_name
+- player_id
+- games_played
+- lane_power_score
+- lane_power_rank
+- lane_power_tier
+- opponent_player_name
+- opponent_player_id
+- opponent_games_played
+- opponent_lane_power_score
+- opponent_lane_power_rank
+- opponent_lane_power_tier
+- lane_power_edge
+- lane_edge_tier
+- avg_dk_points
+- opponent_avg_dk_points
+- avg_dk_points_edge
+- kills_per_game
+- opponent_kills_per_game
+- kills_per_game_edge
+- assists_per_game
+- opponent_assists_per_game
+- assists_per_game_edge
+- dpm
+- opponent_dpm
+- dpm_edge
+- avg_damage_share
+- opponent_avg_damage_share
+- damage_share_edge
+- avg_gold_diff_10
+- opponent_avg_gold_diff_10
+- gold_diff_10_edge
+- avg_xp_diff_10
+- opponent_avg_xp_diff_10
+- xp_diff_10_edge
+- avg_cs_diff_10
+- opponent_avg_cs_diff_10
+- cs_diff_10_edge
+
+## Lane Edge Tier Logic
+- lane_power_edge >= 20 -> Major Edge
+- >= 10 -> Clear Edge
+- >= 3 -> Small Edge
+- > -3 -> Even
+- > -10 -> Small Disadvantage
+- > -20 -> Clear Disadvantage
+- else -> Major Disadvantage
+
+## What Uses This Data
+Direct downstream:
+- dbo.vw_lol_matchup_lane_edge_summary_v1
+
+Later downstream:
+- dbo.vw_lol_upset_resistance_signal_v1
+- dbo.vw_lol_bayes_lane_power_comparison_v1
+- Team Overview Lane Power section
+- Command Center data health
+
+## Run Frequency
+Run when creating or changing the view definition.
+
+Because this is a view, it updates automatically when source data changes.
+
+## Required Before Running
+Requires:
+- dbo.fact_lol_player_game
+- dbo.vw_lol_player_lane_power_rating_v1
+
+## Health Checks
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.vw_lol_matchup_lane_edges_v1;
+
+Check expected lane rows per game:
+SELECT
+    game_id,
+    COUNT(*) AS lane_edge_rows,
+    COUNT(DISTINCT team) AS teams,
+    COUNT(DISTINCT lane) AS lanes
+FROM dbo.vw_lol_matchup_lane_edges_v1
+GROUP BY game_id
+HAVING COUNT(*) <> 10
+ORDER BY lane_edge_rows;
+
+Check edge distribution:
+SELECT
+    league,
+    lane,
+    lane_edge_tier,
+    COUNT(*) AS rows_count,
+    AVG(lane_power_edge) AS avg_lane_power_edge
+FROM dbo.vw_lol_matchup_lane_edges_v1
+GROUP BY league, lane, lane_edge_tier
+ORDER BY league, lane, lane_edge_tier;
+
+## Important Risk Areas
+
+### Risk 1: Hard-coded season = 2026
+This needs future-season cleanup.
+
+### Risk 2: Inner join to player ratings
+If a player does not exist in dbo.vw_lol_player_lane_power_rating_v1, the game/lane row is dropped.
+
+### Risk 3: Actual game source, not future slate source
+This view is based on actual historical game players. For upcoming slate/live preview, another current-slate mapping view is needed.
+
+### Risk 4: Team/player name matching
+Joins to ratings use team and player_name. Name differences will drop rows.
+
+### Risk 5: Team perspective duplication is intentional
+Each lane appears from both team perspectives. Downstream summaries group by team/opponent.
+
+## Recommended Future Enhancements
+- Remove/parameterize hard-coded 2026.
+- Add left join mode or missing-rating diagnostic view.
+- Create live/current-slate lane edge view from DK slate players/manual starters.
+- Add match date/slate mapping if used for DFS slate analysis.
+- Add row completeness health check.
+
+## System Flow
+dbo.fact_lol_player_game
+dbo.vw_lol_player_lane_power_rating_v1
+    -> dbo.vw_lol_matchup_lane_edges_v1
+    -> dbo.vw_lol_matchup_lane_edge_summary_v1
+
+## Documentation Status
+Category: SQL matchup lane edge view
+Consumes: dbo.fact_lol_player_game, dbo.vw_lol_player_lane_power_rating_v1
+Creates: dbo.vw_lol_matchup_lane_edges_v1
+Run frequency: Setup/change only; view updates automatically
+Daily pre-lock required: No, unless historical data refreshed
+Daily post-results required: Source refresh only
+Critical dependency: fact player games and lane-power ratings
+Critical risk: hard-coded 2026, inner join drops unrated players, historical not live-slate

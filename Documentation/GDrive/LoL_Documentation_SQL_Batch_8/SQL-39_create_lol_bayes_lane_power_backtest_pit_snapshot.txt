@@ -1,0 +1,194 @@
+# SQL-39_create_lol_bayes_lane_power_backtest_pit_snapshot
+
+## Source SQL File
+39_create_lol_bayes_lane_power_backtest_pit_snapshot.sql
+
+## Purpose
+Creates the physical PIT Bayes vs Lane Power backtest snapshot table.
+
+In plain English:
+This file creates the table that stores materialized PIT Bayes/Lane Power backtest rows. The table is later populated by file 40 and indexed by file 41.
+
+Unlike file 36, this file uses an explicit CREATE TABLE statement rather than SELECT TOP 0 *.
+
+## SQL Object Created
+Creates:
+
+dbo.lol_bayes_lane_power_backtest_pit_snapshot
+
+This is a physical table.
+
+## Data It Consumes
+This file does not consume data directly.
+
+It only creates the table structure if the table does not already exist.
+
+## Data It Creates / Updates
+Creates table:
+
+dbo.lol_bayes_lane_power_backtest_pit_snapshot
+
+Only if missing.
+
+## Grain
+Intended grain:
+
+target_series_id + team + opponent
+
+One row per team perspective per historical target series.
+
+A normal target series should usually create two rows:
+- Team A perspective
+- Team B perspective
+
+## Main Columns
+
+### Identity / Context
+- backtest_version
+- target_series_id
+- game_date
+- league
+- season
+- team
+- opponent
+
+### Actual Result
+- actual_series_result
+- actual_won_series
+- actual_game_wins
+- actual_game_losses
+
+### Bayes
+- bayes_win_pct
+- opponent_bayes_win_pct
+- smoothed_strength_gap
+- team_strength_bucket
+- opponent_strength_bucket
+- strength_matchup_bucket
+- team_prior_series_count
+- opponent_prior_series_count
+
+### Lane Power Summary
+- lane_rows
+- rated_lane_rows
+- top_lane_edge
+- jng_lane_edge
+- mid_lane_edge
+- adc_lane_edge
+- sup_lane_edge
+- total_lane_edge
+- carry_lane_edge
+- main_carry_lane_edge
+- secondary_lane_edge
+- positive_carry_edge_lanes
+- negative_carry_edge_lanes
+- opponent_neutral_or_better_lanes
+- opponent_neutral_or_better_carry_lanes
+- min_team_prior_games
+- min_opponent_prior_games
+- avg_team_prior_games
+- avg_opponent_prior_games
+- total_lane_edge_tier
+- carry_lane_edge_tier
+
+### Prediction / Signals
+- bayes_predicted_win_flag
+- lane_power_predicted_win_flag
+- bayes_favorite_status
+- lane_favorite_status
+- upset_resistance_score
+- upset_resistance_tier
+- bayes_lane_alignment_label
+- bayes_overconfidence_warning_flag
+- bayes_possible_upset_signal_flag
+- lane_power_breaks_bayes_tie_flag
+- favorite_stomp_support_flag
+
+### Accuracy
+- bayes_winner_correct_flag
+- lane_power_winner_correct_flag
+
+### Metadata
+- refreshed_at
+
+## What Uses This Data
+Direct downstream:
+- backtest summary queries/views
+- Command Center PIT lane-power review if connected
+- model tuning analysis
+
+Related scripts:
+- 40_refresh_lol_bayes_lane_power_backtest_pit_snapshot.sql
+- 41_index_lol_bayes_lane_power_backtest_pit_snapshot.sql
+
+## Run Frequency
+Run once during setup or when changing the table schema.
+
+Do not run daily.
+
+Daily/repeatable refresh should use file 40.
+
+## Required Before Running
+No upstream object required for table creation.
+
+## Required After Running
+Run:
+1. 40_refresh_lol_bayes_lane_power_backtest_pit_snapshot.sql
+2. 41_index_lol_bayes_lane_power_backtest_pit_snapshot.sql
+
+## Health Checks
+
+Check table exists:
+SELECT
+    OBJECT_ID('dbo.lol_bayes_lane_power_backtest_pit_snapshot', 'U') AS object_id;
+
+Check row count:
+SELECT
+    COUNT(*) AS rows_count
+FROM dbo.lol_bayes_lane_power_backtest_pit_snapshot;
+
+Check table columns:
+SELECT
+    COLUMN_NAME,
+    DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'dbo'
+  AND TABLE_NAME = 'lol_bayes_lane_power_backtest_pit_snapshot'
+ORDER BY ORDINAL_POSITION;
+
+## Important Risk Areas
+
+### Risk 1: Existing table is not altered
+If the table already exists with an older schema, this script will not update it.
+
+### Risk 2: No primary key or unique constraint
+The table does not enforce uniqueness by target_series_id/team/opponent. Repeated refresh uses TRUNCATE first, so duplicates are unlikely if refresh works, but not structurally prevented.
+
+### Risk 3: Depends on refresh script for data
+This file creates an empty table only.
+
+### Risk 4: Season not stored as constrained
+The table can store multiple seasons, but refresh file 40 is hard-coded to season 2026.
+
+## Recommended Future Enhancements
+- Add a unique index on target_series_id/team/opponent/backtest_version.
+- Add run_id or snapshot_version.
+- Add explicit created_at/refreshed_at run metadata table.
+- Add schema migration checks.
+- Add indexes in the creation script or keep 41 as dedicated index file.
+
+## System Flow
+SQL-39 creates dbo.lol_bayes_lane_power_backtest_pit_snapshot
+    -> SQL-40 refreshes rows
+    -> SQL-41 indexes table
+    -> PIT backtest reporting
+
+## Documentation Status
+Category: SQL snapshot table creation
+Consumes: No data directly
+Creates: dbo.lol_bayes_lane_power_backtest_pit_snapshot
+Run frequency: Setup/rebuild only
+Daily pre-lock required: No
+Daily post-results required: No, refresh file is repeatable step
+Critical dependency: refresh script for population
+Critical risk: no uniqueness constraint, existing old schema not altered

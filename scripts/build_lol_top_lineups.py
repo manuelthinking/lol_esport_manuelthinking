@@ -901,10 +901,7 @@ def make_player_records(player_proj_df):
     records = []
 
     for _, r in player_proj_df.iterrows():
-        slot = str(r["slot"]).upper()
-
-        if slot == "BOT":
-            slot = "ADC"
+        slot = str(r.get("slot", r.get("dk_position", ""))).upper().replace("BOT", "ADC")
 
         if slot not in ["TOP", "JNG", "MID", "ADC", "SUP"]:
             continue
@@ -916,6 +913,7 @@ def make_player_records(player_proj_df):
             {
                 "entity_type": "PLAYER",
                 "slot": slot,
+                "source_slot": slot,
                 "name": name,
                 "team": team,
                 "salary": int(round(float(r["salary"]))),
@@ -923,6 +921,8 @@ def make_player_records(player_proj_df):
                 "ceiling": float(r["ceiling_dk"]),
                 "value": float(r["value_proj"]),
                 "player_id": str(r.get("dk_player_id", "")),
+                "game_info": str(r.get("game_info", "")),
+                "selected_result": str(r.get("selected_result", "")),
                 "unique_key": f"PLAYER|{team}|{name}",
             }
         )
@@ -941,6 +941,7 @@ def make_team_records(team_proj_df):
             {
                 "entity_type": "TEAM",
                 "slot": "TEAM",
+                "source_slot": "TEAM",
                 "name": name,
                 "team": team,
                 "salary": int(round(float(r["salary"]))),
@@ -948,6 +949,8 @@ def make_team_records(team_proj_df):
                 "ceiling": float(r["team_ceiling_dk"]),
                 "value": float(r["team_value"]),
                 "player_id": str(r.get("dk_player_id", "")),
+                "game_info": str(r.get("game_info", "")),
+                "selected_result": str(r.get("selected_result", "")),
                 "unique_key": f"TEAM|{team}|{name}",
             }
         )
@@ -1030,6 +1033,103 @@ def get_stack_shape_bonus(stack_shape):
         return 4.0
     return 0.0
 
+def is_win_result(result):
+    return str(result).strip() in ["2-0", "2-1"]
+
+
+def is_loss_result(result):
+    return str(result).strip() in ["1-2", "0-2"]
+
+
+def max_allowed_for_result(result):
+    result = str(result).strip()
+
+    if result in ["2-0", "2-1"]:
+        return 4
+
+    if result == "1-2":
+        return 2
+
+    if result == "0-2":
+        return 1
+
+    return 1
+
+
+def get_team_result_map(lineup):
+    result_map = {}
+
+    for slot in ["CPT", "TOP", "JNG", "MID", "ADC", "SUP", "TEAM"]:
+        team = lineup[slot]["team"]
+        result = lineup[slot].get("selected_result", "")
+        if team not in result_map and result:
+            result_map[team] = result
+
+    return result_map
+
+
+def get_team_game_map(lineup):
+    game_map = {}
+
+    for slot in ["CPT", "TOP", "JNG", "MID", "ADC", "SUP", "TEAM"]:
+        team = lineup[slot]["team"]
+        game_info = lineup[slot].get("game_info", "")
+        if team not in game_map and game_info:
+            game_map[team] = game_info
+
+    return game_map
+
+
+def passes_scenario_rules(lineup, team_counts):
+    """
+    Scenario rules:
+      - TEAM slot must be from projected winner.
+      - No 3+ stack from projected loser.
+      - 0-2 loser max 1 roster spot.
+      - 1-2 loser max 2 roster spots.
+      - Do not stack both sides of same matchup.
+    """
+
+    result_map = get_team_result_map(lineup)
+    game_map = get_team_game_map(lineup)
+
+    team_slot_result = lineup["TEAM"].get("selected_result", "")
+
+    # TEAM slot should come from selected winner.
+    if not is_win_result(team_slot_result):
+        return False
+
+    # Enforce max exposure based on selected result.
+    for team, count in team_counts.items():
+        result = result_map.get(team, "")
+        max_allowed = max_allowed_for_result(result)
+
+        if count > max_allowed:
+            return False
+
+        # No 3+ losing team stack.
+        if is_loss_result(result) and count >= 3:
+            return False
+
+    # Prevent stacking both sides of the same matchup.
+    # Example: BLG 4 + TES 3 from the same match should be rejected.
+    game_to_stacked_teams = {}
+
+    for team, count in team_counts.items():
+        game_info = game_map.get(team, "")
+
+        if not game_info:
+            continue
+
+        # Count 2+ as a meaningful stack. One-offs are okay.
+        if count >= 2:
+            game_to_stacked_teams.setdefault(game_info, []).append(team)
+
+    for game_info, stacked_teams in game_to_stacked_teams.items():
+        if len(stacked_teams) > 1:
+            return False
+
+    return True
 
 def build_top_lineups(
     player_proj_df,
@@ -1181,6 +1281,9 @@ def build_top_lineups(
 
                 if max(team_counts.values()) > max_team:
                     continue
+
+                if not passes_scenario_rules(lineup, team_counts):
+                    continue    
 
                 cpt_team_count = team_counts.get(cpt["team"], 0)
 
